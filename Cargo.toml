@@ -1,0 +1,25 @@
+[package]
+name = "ascii3d"
+version = "0.1.0"
+edition = "2021"
+
+exclude = [
+    "/.cargo/*",
+    "/tools/*",
+    "/examples/*",
+]
+
+[dependencies]
+glam = "0.30.10"
+
+[dependencies.crossterm]
+version = "0.29.0"
+optional = true
+
+[features]
+default = []
+
+terminal = ["dep:crossterm"]
+png = []
+gltf = []
+rayon = []
