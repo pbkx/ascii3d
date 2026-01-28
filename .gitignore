@@ -1,4 +1,3 @@
 target/
 examples/
-tools/msys2-gcc.cmd
-tools/msys2-ar.cmd
+tools/
