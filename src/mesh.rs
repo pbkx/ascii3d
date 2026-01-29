@@ -1,9 +1,43 @@
 use glam::Vec3;
+use std::{
+    fmt,
+};
+
+pub type Tri = [u32; 3];
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MeshValidationError {
+    PositionNotFinite { index: usize },
+    NormalNotFinite { index: usize },
+    NormalsLenMismatch { normals: usize, positions: usize },
+    TriangleIndexOutOfBounds { tri: usize, index: u32, vertex_count: usize },
+}
+
+impl fmt::Display for MeshValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            MeshValidationError::PositionNotFinite { index } => {
+                write!(f, "position_not_finite:{index}")
+            }
+            MeshValidationError::NormalNotFinite { index } => {
+                write!(f, "normal_not_finite:{index}")
+            }
+            MeshValidationError::NormalsLenMismatch { normals, positions } => {
+                write!(f, "normals_len_mismatch:{normals}:{positions}")
+            }
+            MeshValidationError::TriangleIndexOutOfBounds { tri, index, vertex_count } => {
+                write!(f, "tri_oob:{tri}:{index}:{vertex_count}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for MeshValidationError {}
 
 #[derive(Clone, Debug, Default)]
 pub struct Mesh {
     pub positions: Vec<Vec3>,
-    pub indices: Vec<[u32; 3]>,
+    pub indices: Vec<Tri>,
     pub normals: Vec<Vec3>,
 }
 
@@ -17,7 +51,7 @@ impl Mesh {
         self
     }
 
-    pub fn with_indices(mut self, indices: Vec<[u32; 3]>) -> Self {
+    pub fn with_indices(mut self, indices: Vec<Tri>) -> Self {
         self.indices = indices;
         self
     }
@@ -29,5 +63,219 @@ impl Mesh {
 
     pub fn push_triangle(&mut self, i0: u32, i1: u32, i2: u32) {
         self.indices.push([i0, i1, i2]);
+    }
+
+    pub fn unit_triangle() -> Self {
+        let positions = vec![
+            Vec3::new(-0.5, -0.5, 0.0),
+            Vec3::new(0.5, -0.5, 0.0),
+            Vec3::new(0.0, 0.5, 0.0),
+        ];
+        let indices = vec![[0, 1, 2]];
+        Self {
+            positions,
+            indices,
+            normals: Vec::new(),
+        }
+    }
+
+    pub fn unit_cube() -> Self {
+        let positions = vec![
+            Vec3::new(-0.5, -0.5, -0.5),
+            Vec3::new(0.5, -0.5, -0.5),
+            Vec3::new(0.5, 0.5, -0.5),
+            Vec3::new(-0.5, 0.5, -0.5),
+            Vec3::new(-0.5, -0.5, 0.5),
+            Vec3::new(0.5, -0.5, 0.5),
+            Vec3::new(0.5, 0.5, 0.5),
+            Vec3::new(-0.5, 0.5, 0.5),
+        ];
+
+        let indices = vec![
+            [4, 5, 6],
+            [4, 6, 7],
+            [1, 0, 3],
+            [1, 3, 2],
+            [0, 4, 7],
+            [0, 7, 3],
+            [5, 1, 2],
+            [5, 2, 6],
+            [3, 7, 6],
+            [3, 6, 2],
+            [0, 1, 5],
+            [0, 5, 4],
+        ];
+
+        Self {
+            positions,
+            indices,
+            normals: Vec::new(),
+        }
+    }
+
+    pub fn validate_basic(&self) -> Result<(), MeshValidationError> {
+        for (i, p) in self.positions.iter().enumerate() {
+            if !(p.x.is_finite() && p.y.is_finite() && p.z.is_finite()) {
+                return Err(MeshValidationError::PositionNotFinite { index: i });
+            }
+        }
+
+        if !self.normals.is_empty() && self.normals.len() != self.positions.len() {
+            return Err(MeshValidationError::NormalsLenMismatch {
+                normals: self.normals.len(),
+                positions: self.positions.len(),
+            });
+        }
+
+        for (i, n) in self.normals.iter().enumerate() {
+            if !(n.x.is_finite() && n.y.is_finite() && n.z.is_finite()) {
+                return Err(MeshValidationError::NormalNotFinite { index: i });
+            }
+        }
+
+        let vc = self.positions.len();
+        for (ti, t) in self.indices.iter().enumerate() {
+            for &ix in t.iter() {
+                if ix as usize >= vc {
+                    return Err(MeshValidationError::TriangleIndexOutOfBounds {
+                        tri: ti,
+                        index: ix,
+                        vertex_count: vc,
+                    });
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn ensure_normals(&mut self) {
+        if self.positions.is_empty() {
+            self.normals.clear();
+            return;
+        }
+
+        if self.normals.len() != self.positions.len() {
+            self.normals
+                .resize(self.positions.len(), Vec3::new(0.0, 0.0, 0.0));
+        }
+
+        fn normalize_or(v: Vec3, fallback: Vec3) -> Vec3 {
+            let l = v.length();
+            if l > 1e-8 {
+                v / l
+            } else {
+                fallback
+            }
+        }
+
+        fn angle(u: Vec3, v: Vec3) -> f32 {
+            let uu = normalize_or(u, Vec3::new(0.0, 0.0, 0.0));
+            let vv = normalize_or(v, Vec3::new(0.0, 0.0, 0.0));
+            let dot = uu.dot(vv).clamp(-1.0, 1.0);
+            let cr = uu.cross(vv).length();
+            cr.atan2(dot)
+        }
+
+        let mut acc = vec![Vec3::new(0.0, 0.0, 0.0); self.positions.len()];
+
+        for t in &self.indices {
+            let [i0, i1, i2] = *t;
+            let (i0u, i1u, i2u) = (i0 as usize, i1 as usize, i2 as usize);
+            if i0u >= self.positions.len() || i1u >= self.positions.len() || i2u >= self.positions.len() {
+                continue;
+            }
+
+            let a = self.positions[i0u];
+            let b = self.positions[i1u];
+            let c = self.positions[i2u];
+
+            let fn_raw = (b - a).cross(c - a);
+            let fn_u = normalize_or(fn_raw, Vec3::new(0.0, 0.0, 0.0));
+            if fn_u.length() < 1e-8 {
+                continue;
+            }
+
+            let wa = angle(b - a, c - a);
+            let wb = angle(c - b, a - b);
+            let wc = angle(a - c, b - c);
+
+            acc[i0u] += fn_u * wa;
+            acc[i1u] += fn_u * wb;
+            acc[i2u] += fn_u * wc;
+        }
+
+for (i, v) in acc.iter().enumerate().take(self.normals.len()) {
+            self.normals[i] = v.normalize_or_zero();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        Mesh, MeshValidationError,
+    };
+    use glam::Vec3;
+
+    #[test]
+    fn unit_triangle_invariants() {
+        let m = Mesh::unit_triangle();
+        assert_eq!(m.validate_basic(), Ok(()));
+    }
+
+    #[test]
+    fn ensure_normals_unit_triangle() {
+        let mut m = Mesh::unit_triangle();
+        m.ensure_normals();
+        assert_eq!(m.normals.len(), m.positions.len());
+        for n in &m.normals {
+            assert!((n.length() - 1.0).abs() < 1e-4);
+            assert!(n.z > 0.9);
+            assert!(n.x.abs() < 1e-4);
+            assert!(n.y.abs() < 1e-4);
+        }
+    }
+
+    #[test]
+    fn ensure_normals_preserves_existing() {
+        let mut m = Mesh::unit_triangle();
+        m.normals = vec![
+            Vec3::new(0.0, 0.0, 2.0),
+            Vec3::new(0.0, 0.0, 3.0),
+            Vec3::new(0.0, 0.0, 4.0),
+        ];
+        m.ensure_normals();
+        for n in &m.normals {
+            assert!((n.length() - 1.0).abs() < 1e-4);
+            assert!(n.z > 0.99);
+        }
+    }
+
+    #[test]
+    fn unit_cube_normals_and_invariants() {
+        let mut m = Mesh::unit_cube();
+        assert_eq!(m.validate_basic(), Ok(()));
+        m.ensure_normals();
+        assert_eq!(m.normals.len(), m.positions.len());
+        for (i, n) in m.normals.iter().enumerate() {
+            assert!(n.x.is_finite() && n.y.is_finite() && n.z.is_finite(), "n{i}");
+            assert!((n.length() - 1.0).abs() < 1e-4);
+        }
+        assert_eq!(m.validate_basic(), Ok(()));
+    }
+
+    #[test]
+    fn invalid_index_is_detected() {
+        let mut m = Mesh::unit_triangle();
+        m.push_triangle(0, 1, 7);
+        let e = m.validate_basic().unwrap_err();
+        match e {
+            MeshValidationError::TriangleIndexOutOfBounds { tri: _, index, vertex_count } => {
+                assert_eq!(index, 7);
+                assert_eq!(vertex_count, 3);
+            }
+            _ => panic!("wrong_error"),
+        }
     }
 }
