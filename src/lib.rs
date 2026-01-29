@@ -6,6 +6,7 @@ pub mod light;
 pub mod material;
 pub mod mesh;
 pub mod prelude;
+pub mod raster;
 pub mod renderer;
 pub mod scene;
 pub mod targets;

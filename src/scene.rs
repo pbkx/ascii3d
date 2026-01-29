@@ -15,7 +15,15 @@ struct SceneObject {
 }
 
 impl Scene {
-    pub fn new(camera: Camera) -> Self {
+    pub fn new() -> Self {
+        Self {
+            camera: Camera::default(),
+            lights: Vec::new(),
+            objects: Vec::new(),
+        }
+    }
+
+    pub fn with_camera(camera: Camera) -> Self {
         Self {
             camera,
             lights: Vec::new(),
@@ -27,7 +35,7 @@ impl Scene {
         self.lights.push(light);
     }
 
-    pub fn add_object(&mut self, mesh: Mesh, material: Material, transform: Transform) -> usize {
+    pub fn add_object(&mut self, mesh: Mesh, transform: Transform, material: Material) -> usize {
         let idx = self.objects.len();
         self.objects.push(SceneObject {
             mesh,
@@ -45,5 +53,11 @@ impl Scene {
         self.objects
             .iter()
             .map(|o| (&o.mesh, &o.material, &o.transform))
+    }
+}
+
+impl Default for Scene {
+    fn default() -> Self {
+        Self::new()
     }
 }
