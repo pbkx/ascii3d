@@ -149,6 +149,13 @@ impl Mesh {
         Ok(())
     }
 
+    pub fn assert_invariants(&self) {
+        if let Err(e) = self.validate_basic() {
+            panic!("{e:?}");
+        }
+    }
+
+
     pub fn ensure_normals(&mut self) {
         if self.positions.is_empty() {
             self.normals.clear();
