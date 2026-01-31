@@ -324,3 +324,13 @@ pub fn rasterize(scene: &Scene, camera: &Camera, surf: &mut RasterSurface<'_>) {
         }
     }
 }
+
+pub fn render_to_buffer(scene: &Scene, buf: &mut BufferTarget) {
+    let cfg = RasterConfig {
+        width: buf.width() as u32,
+        height: buf.height() as u32,
+    };
+    let mut surf = RasterSurface::new(cfg, buf);
+    rasterize(scene, &scene.camera, &mut surf);
+}
+
