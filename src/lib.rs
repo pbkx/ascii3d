@@ -2,6 +2,7 @@
 
 pub mod camera;
 pub mod io;
+pub mod gbuffer;
 pub mod light;
 pub mod material;
 pub mod mesh;
@@ -15,10 +16,11 @@ pub mod types;
 
 pub use crate::{
     camera::{Camera, Projection},
+    gbuffer::GBuffer,
     light::Light,
     material::Material,
     mesh::Mesh,
-    renderer::{Renderer, RendererConfig},
+    renderer::{DebugView, Renderer, RendererConfig},
     scene::Scene,
     transform::Transform,
 };
