@@ -1,5 +1,6 @@
 use crate::{
     raster,
+    shader::{BuiltinShader, Shader, ShaderId},
     targets::{BufferTarget, Cell, ImageTarget},
     GBuffer, Scene,
 };
@@ -18,6 +19,7 @@ pub struct RendererConfig {
     height: usize,
     ramp: Vec<char>,
     debug_view: DebugView,
+    shader: ShaderId,
 }
 
 impl Default for RendererConfig {
@@ -27,6 +29,7 @@ impl Default for RendererConfig {
             height: 40,
             ramp: " .:-=+*#%@".chars().collect(),
             debug_view: DebugView::Final,
+            shader: ShaderId::Lambert,
         }
     }
 }
@@ -55,6 +58,11 @@ impl RendererConfig {
         self
     }
 
+    pub fn with_shader(mut self, shader: ShaderId) -> Self {
+        self.shader = shader;
+        self
+    }
+
     pub fn width(&self) -> usize {
         self.width
     }
@@ -69,6 +77,10 @@ impl RendererConfig {
 
     pub fn debug_view(&self) -> DebugView {
         self.debug_view
+    }
+
+    pub fn shader(&self) -> ShaderId {
+        self.shader
     }
 }
 
@@ -104,14 +116,6 @@ impl Renderer {
         ramp[idx]
     }
 
-    fn map_final_char(&self, normal: Vec3) -> char {
-        let n = normal.normalize_or_zero();
-        let light_dir = Vec3::new(0.0, 0.0, 1.0);
-        let ndotl = n.dot(light_dir).max(0.0);
-        let t = 0.15 + 0.85 * ndotl;
-        Self::pick_ramp_char(self.config.ramp(), t)
-    }
-
     fn map_depth_char(&self, depth: f32) -> char {
         let t = (1.0 - (depth + 1.0) * 0.5).clamp(0.0, 1.0);
         Self::pick_ramp_char(self.config.ramp(), t)
@@ -127,6 +131,8 @@ impl Renderer {
         let h = gbuf.height();
         let depth = gbuf.depth_slice();
         let normal = gbuf.normal_slice();
+        let albedo = gbuf.albedo_slice();
+        let shader = BuiltinShader::from_id(self.config.shader());
         for y in 0..h {
             for x in 0..w {
                 let i = y * w + x;
@@ -134,12 +140,24 @@ impl Renderer {
                 if z.is_infinite() {
                     continue;
                 }
-                let ch = match self.config.debug_view() {
-                    DebugView::Final => self.map_final_char(normal[i]),
-                    DebugView::Depth => self.map_depth_char(z),
-                    DebugView::Normals => self.map_normals_char(normal[i]),
+                let cell = match self.config.debug_view() {
+                    DebugView::Final => {
+                        let s = shader.shade(z, normal[i], albedo[i]);
+                        let ch = Self::pick_ramp_char(self.config.ramp(), s.intensity);
+                        Cell::new(ch, 255, 0, z)
+                    }
+                    DebugView::Depth => {
+                        let ch = self.map_depth_char(z);
+                        Cell::new(ch, 180, 0, z)
+                    }
+                    DebugView::Normals => {
+                        let ch = self.map_normals_char(normal[i]);
+                        let n = normal[i].normalize_or_zero().abs();
+                        let c = ((n.x + n.y + n.z) / 3.0 * 255.0).round() as u8;
+                        Cell::new(ch, c, 0, z)
+                    }
                 };
-                let _ = out.set(x, y, Cell::new(ch, 255, 0, z));
+                let _ = out.set(x, y, cell);
             }
         }
     }
@@ -150,6 +168,7 @@ impl Renderer {
         let depth = gbuf.depth_slice();
         let normal = gbuf.normal_slice();
         let albedo = gbuf.albedo_slice();
+        let shader = BuiltinShader::from_id(self.config.shader());
         for y in 0..h {
             for x in 0..w {
                 let i = y * w + x;
@@ -159,11 +178,8 @@ impl Renderer {
                 }
                 let (rgb, a) = match self.config.debug_view() {
                     DebugView::Final => {
-                        let n = normal[i].normalize_or_zero();
-                        let light_dir = Vec3::new(0.0, 0.0, 1.0);
-                        let ndotl = n.dot(light_dir).max(0.0);
-                        let lit = 0.15 + 0.85 * ndotl;
-                        (albedo[i] * lit, 255)
+                        let s = shader.shade(z, normal[i], albedo[i]);
+                        (s.rgb, 255)
                     }
                     DebugView::Depth => {
                         let t = (1.0 - (z + 1.0) * 0.5).clamp(0.0, 1.0);
@@ -205,7 +221,7 @@ impl Renderer {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Material, Mesh, Renderer, RendererConfig, Scene, Transform};
+    use crate::{Material, Mesh, Renderer, RendererConfig, Scene, ShaderId, Transform};
 
     #[test]
     fn smoke_triangle_renders_deterministically() {
@@ -264,6 +280,35 @@ mod tests {
         r_final.render_image(&scene, &mut img_final);
         r_norm.render_image(&scene, &mut img_norm);
         assert_ne!(img_final.hash64(), img_norm.hash64());
+    }
+
+    #[test]
+    fn shader_changes_output_hash() {
+        let mut scene = Scene::new();
+        scene.add_object(
+            Mesh::unit_triangle(),
+            Transform::IDENTITY,
+            Material::default(),
+        );
+
+        let mut img_lambert = crate::targets::ImageTarget::new(64, 32);
+        let mut img_unlit = crate::targets::ImageTarget::new(64, 32);
+
+        let r_lambert = Renderer::new(
+            RendererConfig::default()
+                .with_size(64, 32)
+                .with_shader(ShaderId::Lambert),
+        );
+        let r_unlit = Renderer::new(
+            RendererConfig::default()
+                .with_size(64, 32)
+                .with_shader(ShaderId::Unlit),
+        );
+
+        r_lambert.render_image(&scene, &mut img_lambert);
+        r_unlit.render_image(&scene, &mut img_unlit);
+
+        assert_ne!(img_lambert.hash64(), img_unlit.hash64());
     }
 
     #[cfg(feature = "png")]

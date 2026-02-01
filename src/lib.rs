@@ -10,6 +10,7 @@ pub mod prelude;
 pub mod raster;
 pub mod renderer;
 pub mod scene;
+pub mod shader;
 pub mod targets;
 pub mod transform;
 pub mod types;
@@ -22,5 +23,6 @@ pub use crate::{
     mesh::Mesh,
     renderer::{DebugView, Renderer, RendererConfig},
     scene::Scene,
+    shader::{BuiltinShader, LambertShader, ShadeSample, Shader, ShaderId, UnlitShader},
     transform::Transform,
 };
