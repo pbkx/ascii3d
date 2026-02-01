@@ -116,4 +116,39 @@ mod tests {
         let h2 = img2.hash64();
         assert_eq!(h1, h2);
     }
+
+    #[cfg(feature = "png")]
+    #[test]
+    fn smoke_triangle_png_writes_deterministically() {
+        fn fnv64(bytes: &[u8]) -> u64 {
+            let mut h: u64 = 14695981039346656037;
+            for &b in bytes {
+                h ^= b as u64;
+                h = h.wrapping_mul(1099511628211);
+            }
+            h
+        }
+
+        let renderer = Renderer::new(RendererConfig::default().with_size(80, 40));
+        let mut scene = Scene::new();
+        let _ = scene.add_object(Mesh::unit_triangle(), Transform::IDENTITY, Material::default());
+
+        let mut img = ImageTarget::new(80, 40);
+        renderer.render_image(&scene, &mut img);
+        let pix_hash = img.hash64();
+
+        let empty = ImageTarget::new(80, 40);
+        assert_ne!(pix_hash, empty.hash64());
+
+        let png1 = img.write_png_to_vec().expect("png encode");
+        assert!(png1.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]));
+
+        let png_hash1 = fnv64(&png1);
+        let png2 = img.write_png_to_vec().expect("png encode");
+        let png_hash2 = fnv64(&png2);
+
+        assert_eq!(png1, png2);
+        assert_eq!(png_hash1, png_hash2);
+    }
+
 }

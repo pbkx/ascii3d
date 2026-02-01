@@ -4,6 +4,51 @@ pub struct ImageTarget {
     rgba: Vec<u8>,
 }
 
+#[cfg(feature = "png")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PngWriteError {
+    DimensionTooLarge,
+}
+
+#[cfg(feature = "png")]
+fn append_chunk(out: &mut Vec<u8>, kind: [u8; 4], data: &[u8]) {
+    let len = u32::try_from(data.len()).unwrap_or(u32::MAX);
+    out.extend_from_slice(&len.to_be_bytes());
+    out.extend_from_slice(&kind);
+    out.extend_from_slice(data);
+    let mut crc = 0xFFFF_FFFFu32;
+    for &b in &kind {
+        crc = crc32_update(crc, b);
+    }
+    for &b in data {
+        crc = crc32_update(crc, b);
+    }
+    crc = !crc;
+    out.extend_from_slice(&crc.to_be_bytes());
+}
+
+#[cfg(feature = "png")]
+fn crc32_update(mut crc: u32, b: u8) -> u32 {
+    crc ^= b as u32;
+    for _ in 0..8 {
+        let mask = (crc & 1).wrapping_neg();
+        crc = (crc >> 1) ^ (0xEDB8_8320u32 & mask);
+    }
+    crc
+}
+
+#[cfg(feature = "png")]
+fn adler32(data: &[u8]) -> u32 {
+    const MOD: u32 = 65521;
+    let mut s1: u32 = 1;
+    let mut s2: u32 = 0;
+    for &b in data {
+        s1 = (s1 + b as u32) % MOD;
+        s2 = (s2 + s1) % MOD;
+    }
+    (s2 << 16) | s1
+}
+
 impl ImageTarget {
     pub fn new(width: usize, height: usize) -> Self {
         let mut out = Self {
@@ -61,6 +106,56 @@ impl ImageTarget {
         &self.rgba
     }
 
+    #[cfg(feature = "png")]
+    pub fn write_png_to_vec(&self) -> Result<Vec<u8>, PngWriteError> {
+        let width = u32::try_from(self.width).map_err(|_| PngWriteError::DimensionTooLarge)?;
+        let height = u32::try_from(self.height).map_err(|_| PngWriteError::DimensionTooLarge)?;
+
+        let mut raw = Vec::with_capacity(self.height.saturating_mul(1 + 4 * self.width));
+        for y in 0..self.height {
+            raw.push(0u8);
+            let row = &self.rgba[(y * self.width * 4)..((y + 1) * self.width * 4)];
+            raw.extend_from_slice(row);
+        }
+
+        let mut zlib = Vec::new();
+        zlib.push(0x78);
+        zlib.push(0x01);
+
+        let mut i = 0;
+        while i < raw.len() {
+            let remaining = raw.len() - i;
+            let chunk_len = remaining.min(65535);
+            let bfinal = if i + chunk_len == raw.len() { 1u8 } else { 0u8 };
+            zlib.push(bfinal);
+            let len = chunk_len as u16;
+            zlib.extend_from_slice(&len.to_le_bytes());
+            zlib.extend_from_slice(&(!len).to_le_bytes());
+            zlib.extend_from_slice(&raw[i..(i + chunk_len)]);
+            i += chunk_len;
+        }
+
+        let ad = adler32(&raw);
+        zlib.extend_from_slice(&ad.to_be_bytes());
+
+        let mut out = Vec::new();
+        out.extend_from_slice(&[137, 80, 78, 71, 13, 10, 26, 10]);
+
+        let mut ihdr = Vec::with_capacity(13);
+        ihdr.extend_from_slice(&width.to_be_bytes());
+        ihdr.extend_from_slice(&height.to_be_bytes());
+        ihdr.push(8u8);
+        ihdr.push(6u8);
+        ihdr.push(0u8);
+        ihdr.push(0u8);
+        ihdr.push(0u8);
+
+        append_chunk(&mut out, *b"IHDR", &ihdr);
+        append_chunk(&mut out, *b"IDAT", &zlib);
+        append_chunk(&mut out, *b"IEND", &[]);
+
+        Ok(out)
+    }
     pub fn hash64(&self) -> u64 {
         let mut h: u64 = 0xcbf29ce484222325;
         fn mix(h: &mut u64, b: u8) {
