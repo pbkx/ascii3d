@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod camera;
+pub mod debug;
 pub mod io;
 pub mod gbuffer;
 pub mod light;
@@ -17,11 +18,12 @@ pub mod types;
 
 pub use crate::{
     camera::{Camera, Projection},
+    debug::DebugView,
     gbuffer::GBuffer,
     light::Light,
     material::Material,
     mesh::Mesh,
-    renderer::{DebugView, Renderer, RendererConfig},
+    renderer::{Renderer, RendererConfig},
     scene::Scene,
     shader::{BuiltinShader, LambertShader, ShadeSample, Shader, ShaderId, UnlitShader},
     transform::Transform,

@@ -1,17 +1,12 @@
 use crate::{
+    debug::{cell_for_view, rgb_for_view},
     raster,
-    shader::{BuiltinShader, Shader, ShaderId},
+    shader::{BuiltinShader, ShaderId},
     targets::{BufferTarget, Cell, ImageTarget},
     GBuffer, Scene,
 };
-use glam::Vec3;
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum DebugView {
-    Final,
-    Depth,
-    Normals,
-}
+pub use crate::debug::DebugView;
 
 #[derive(Clone, Debug)]
 pub struct RendererConfig {
@@ -98,34 +93,6 @@ impl Renderer {
         &self.config
     }
 
-    fn pick_ramp_char(ramp: &[char], t: f32) -> char {
-        if ramp.is_empty() {
-            return '#';
-        }
-        if ramp.len() == 1 {
-            return ramp[0];
-        }
-        let tt = t.clamp(0.0, 1.0);
-        let mut idx = (tt * (ramp.len() as f32 - 1.0)).round() as usize;
-        if idx >= ramp.len() {
-            idx = ramp.len() - 1;
-        }
-        if idx == 0 && tt > 0.0001 {
-            idx = 1;
-        }
-        ramp[idx]
-    }
-
-    fn map_depth_char(&self, depth: f32) -> char {
-        let t = (1.0 - (depth + 1.0) * 0.5).clamp(0.0, 1.0);
-        Self::pick_ramp_char(self.config.ramp(), t)
-    }
-
-    fn map_normals_char(&self, normal: Vec3) -> char {
-        let t = (normal.normalize_or_zero().z * 0.5 + 0.5).clamp(0.0, 1.0);
-        Self::pick_ramp_char(self.config.ramp(), t)
-    }
-
     fn map_gbuffer_to_buffer(&self, gbuf: &GBuffer, out: &mut BufferTarget) {
         let w = gbuf.width();
         let h = gbuf.height();
@@ -140,23 +107,7 @@ impl Renderer {
                 if z.is_infinite() {
                     continue;
                 }
-                let cell = match self.config.debug_view() {
-                    DebugView::Final => {
-                        let s = shader.shade(z, normal[i], albedo[i]);
-                        let ch = Self::pick_ramp_char(self.config.ramp(), s.intensity);
-                        Cell::new(ch, 255, 0, z)
-                    }
-                    DebugView::Depth => {
-                        let ch = self.map_depth_char(z);
-                        Cell::new(ch, 180, 0, z)
-                    }
-                    DebugView::Normals => {
-                        let ch = self.map_normals_char(normal[i]);
-                        let n = normal[i].normalize_or_zero().abs();
-                        let c = ((n.x + n.y + n.z) / 3.0 * 255.0).round() as u8;
-                        Cell::new(ch, c, 0, z)
-                    }
-                };
+                let cell = cell_for_view(self.config.debug_view(), &shader, self.config.ramp(), z, normal[i], albedo[i]);
                 let _ = out.set(x, y, cell);
             }
         }
@@ -176,20 +127,8 @@ impl Renderer {
                 if z.is_infinite() {
                     continue;
                 }
-                let (rgb, a) = match self.config.debug_view() {
-                    DebugView::Final => {
-                        let s = shader.shade(z, normal[i], albedo[i]);
-                        (s.rgb, 255)
-                    }
-                    DebugView::Depth => {
-                        let t = (1.0 - (z + 1.0) * 0.5).clamp(0.0, 1.0);
-                        (Vec3::splat(t), 255)
-                    }
-                    DebugView::Normals => {
-                        let n = normal[i].normalize_or_zero();
-                        ((n * 0.5 + Vec3::splat(0.5)).clamp(Vec3::ZERO, Vec3::ONE), 255)
-                    }
-                };
+                let rgb = rgb_for_view(self.config.debug_view(), &shader, z, normal[i], albedo[i]);
+                let a = 255;
                 let r = (rgb.x.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
                 let g = (rgb.y.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
                 let b = (rgb.z.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
@@ -221,14 +160,14 @@ impl Renderer {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Material, Mesh, Renderer, RendererConfig, Scene, ShaderId, Transform};
+    use crate::{DebugView, Material, Mesh, Renderer, RendererConfig, Scene, ShaderId, Transform};
 
     #[test]
     fn smoke_triangle_renders_deterministically() {
         let mut scene = Scene::new();
         scene.add_object(
             Mesh::unit_triangle(),
-            Transform::IDENTITY,
+            Transform::from_rotation(glam::Quat::from_rotation_y(1.0)),
             Material::default(),
         );
         let renderer = Renderer::new(RendererConfig::default().with_size(64, 32));
@@ -280,6 +219,48 @@ mod tests {
         r_final.render_image(&scene, &mut img_final);
         r_norm.render_image(&scene, &mut img_norm);
         assert_ne!(img_final.hash64(), img_norm.hash64());
+    }
+
+    #[test]
+    fn debug_view_modes_produce_distinct_hashes() {
+        let mut scene = Scene::new();
+        scene.add_object(
+            Mesh::unit_triangle(),
+            Transform::IDENTITY,
+            Material {
+                albedo: glam::Vec3::new(0.25, 0.75, 0.35),
+                ..Material::default()
+            },
+        );
+
+        let modes = [
+            DebugView::Final,
+            DebugView::Depth,
+            DebugView::Normals,
+            DebugView::Albedo,
+        ];
+
+        let mut hashes = Vec::new();
+        for &m in &modes {
+            let renderer = Renderer::new(RendererConfig::default().with_size(64, 32).with_debug_view(m));
+            let mut img = crate::targets::ImageTarget::new(64, 32);
+            renderer.render_image(&scene, &mut img);
+            hashes.push(img.hash64());
+        }
+
+        let mut set = std::collections::HashSet::<u64>::new();
+        for h in &hashes {
+            set.insert(*h);
+        }
+        assert_eq!(set.len(), modes.len());
+
+        // Determinism check: rendering again yields identical hashes.
+        for (idx, &m) in modes.iter().enumerate() {
+            let renderer = Renderer::new(RendererConfig::default().with_size(64, 32).with_debug_view(m));
+            let mut img = crate::targets::ImageTarget::new(64, 32);
+            renderer.render_image(&scene, &mut img);
+            assert_eq!(img.hash64(), hashes[idx]);
+        }
     }
 
     #[test]
