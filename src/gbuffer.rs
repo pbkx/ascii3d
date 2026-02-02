@@ -1,5 +1,12 @@
 use glam::Vec3;
 
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct GBufferPixel {
+    pub depth: f32,
+    pub normal: Vec3,
+    pub albedo: Vec3,
+}
+
 #[derive(Clone, Debug)]
 pub struct GBuffer {
     width: usize,
@@ -60,5 +67,17 @@ impl GBuffer {
         } else {
             false
         }
+    }
+
+    pub fn at(&self, x: usize, y: usize) -> Option<GBufferPixel> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        let i = y * self.width + x;
+        Some(GBufferPixel {
+            depth: self.depth[i],
+            normal: self.normal[i],
+            albedo: self.albedo[i],
+        })
     }
 }

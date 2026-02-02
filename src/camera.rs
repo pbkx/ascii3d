@@ -49,7 +49,7 @@ impl Projection {
                 let n = *near;
                 let fa = *far;
 
-                // OpenGL-style RH clip space (NDC z in [-1, 1]).
+                
                 let m00 = f / a;
                 let m11 = f;
                 let m22 = (fa + n) / (n - fa);

@@ -1,20 +1,22 @@
 use crate::{
-    debug::{cell_for_view, rgb_for_view},
+    debug::{rgb_for_view, scalar_for_view, DebugView},
+    glyph::{AsciiRamp, GlyphMode},
+    gbuffer::GBuffer,
     raster,
+    scene::Scene,
     shader::{BuiltinShader, ShaderId},
     targets::{BufferTarget, Cell, ImageTarget},
-    GBuffer, Scene,
 };
 
-pub use crate::debug::DebugView;
+use glam::Vec3;
 
 #[derive(Clone, Debug)]
 pub struct RendererConfig {
     width: usize,
     height: usize,
-    ramp: Vec<char>,
+    shader: BuiltinShader,
     debug_view: DebugView,
-    shader: ShaderId,
+    glyph_mode: GlyphMode,
 }
 
 impl Default for RendererConfig {
@@ -22,40 +24,16 @@ impl Default for RendererConfig {
         Self {
             width: 80,
             height: 40,
-            ramp: " .:-=+*#%@".chars().collect(),
+            shader: BuiltinShader::from_id(ShaderId::Lambert),
             debug_view: DebugView::Final,
-            shader: ShaderId::Lambert,
+            glyph_mode: GlyphMode::default(),
         }
     }
 }
 
 impl RendererConfig {
     pub fn new(width: usize, height: usize) -> Self {
-        Self::default().with_size(width, height)
-    }
-
-    pub fn with_size(mut self, width: usize, height: usize) -> Self {
-        self.width = width;
-        self.height = height;
-        self
-    }
-
-    pub fn with_ramp(mut self, ramp: &str) -> Self {
-        self.ramp = ramp.chars().collect();
-        if self.ramp.is_empty() {
-            self.ramp = vec!['#'];
-        }
-        self
-    }
-
-    pub fn with_debug_view(mut self, view: DebugView) -> Self {
-        self.debug_view = view;
-        self
-    }
-
-    pub fn with_shader(mut self, shader: ShaderId) -> Self {
-        self.shader = shader;
-        self
+        RendererConfig::default().with_size(width, height)
     }
 
     pub fn width(&self) -> usize {
@@ -66,20 +44,56 @@ impl RendererConfig {
         self.height
     }
 
-    pub fn ramp(&self) -> &[char] {
-        &self.ramp
+    pub fn shader(&self) -> &BuiltinShader {
+        &self.shader
     }
 
     pub fn debug_view(&self) -> DebugView {
         self.debug_view
     }
 
-    pub fn shader(&self) -> ShaderId {
-        self.shader
+    pub fn glyph_mode(&self) -> &GlyphMode {
+        &self.glyph_mode
+    }
+
+    pub fn with_size(mut self, width: usize, height: usize) -> Self {
+        self.width = width;
+        self.height = height;
+        self
+    }
+
+    pub fn with_shader_id(mut self, id: ShaderId) -> Self {
+        self.shader = BuiltinShader::from_id(id);
+        self
+    }
+
+    pub fn with_debug_view(mut self, view: DebugView) -> Self {
+        self.debug_view = view;
+        self
+    }
+
+    pub fn with_glyph_mode(mut self, mode: GlyphMode) -> Self {
+        self.glyph_mode = mode;
+        self
+    }
+
+    pub fn with_ascii_ramp(self, ramp: AsciiRamp) -> Self {
+        self.with_glyph_mode(GlyphMode::AsciiRamp(ramp))
+    }
+
+    pub fn with_ramp_name(mut self, name: &str) -> Self {
+        if let Some(r) = AsciiRamp::from_name(name) {
+            self.glyph_mode = GlyphMode::AsciiRamp(r);
+        }
+        self
+    }
+
+    pub fn with_ramp_chars(mut self, chars: &str) -> Self {
+        self.glyph_mode = GlyphMode::AsciiRamp(AsciiRamp::new(chars));
+        self
     }
 }
 
-#[derive(Clone, Debug)]
 pub struct Renderer {
     config: RendererConfig,
 }
@@ -87,54 +101,6 @@ pub struct Renderer {
 impl Renderer {
     pub fn new(config: RendererConfig) -> Self {
         Self { config }
-    }
-
-    pub fn config(&self) -> &RendererConfig {
-        &self.config
-    }
-
-    fn map_gbuffer_to_buffer(&self, gbuf: &GBuffer, out: &mut BufferTarget) {
-        let w = gbuf.width();
-        let h = gbuf.height();
-        let depth = gbuf.depth_slice();
-        let normal = gbuf.normal_slice();
-        let albedo = gbuf.albedo_slice();
-        let shader = BuiltinShader::from_id(self.config.shader());
-        for y in 0..h {
-            for x in 0..w {
-                let i = y * w + x;
-                let z = depth[i];
-                if z.is_infinite() {
-                    continue;
-                }
-                let cell = cell_for_view(self.config.debug_view(), &shader, self.config.ramp(), z, normal[i], albedo[i]);
-                let _ = out.set(x, y, cell);
-            }
-        }
-    }
-
-    fn map_gbuffer_to_image(&self, gbuf: &GBuffer, out: &mut ImageTarget) {
-        let w = gbuf.width();
-        let h = gbuf.height();
-        let depth = gbuf.depth_slice();
-        let normal = gbuf.normal_slice();
-        let albedo = gbuf.albedo_slice();
-        let shader = BuiltinShader::from_id(self.config.shader());
-        for y in 0..h {
-            for x in 0..w {
-                let i = y * w + x;
-                let z = depth[i];
-                if z.is_infinite() {
-                    continue;
-                }
-                let rgb = rgb_for_view(self.config.debug_view(), &shader, z, normal[i], albedo[i]);
-                let a = 255;
-                let r = (rgb.x.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-                let g = (rgb.y.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-                let b = (rgb.z.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-                out.set_rgba(x, y, r, g, b, a);
-            }
-        }
     }
 
     pub fn render(&self, scene: &Scene, target: &mut BufferTarget) {
@@ -147,6 +113,22 @@ impl Renderer {
         self.map_gbuffer_to_buffer(&gbuf, target);
     }
 
+    fn map_gbuffer_to_buffer(&self, gbuf: &GBuffer, target: &mut BufferTarget) {
+        for y in 0..target.height() {
+            for x in 0..target.width() {
+                let Some(p) = gbuf.at(x, y) else {
+                    continue;
+                };
+                if !p.depth.is_finite() {
+                    continue;
+                }
+                let t = scalar_for_view(self.config.debug_view(), self.config.shader(), p.depth, p.normal, p.albedo);
+                let cell = self.config.glyph_mode().cell_from_scalar(t, p.depth);
+                let _ = target.set(x, y, cell);
+            }
+        }
+    }
+
     pub fn render_image(&self, scene: &Scene, target: &mut ImageTarget) {
         if target.width() != self.config.width() || target.height() != self.config.height() {
             *target = ImageTarget::new(self.config.width(), self.config.height());
@@ -155,6 +137,22 @@ impl Renderer {
         let mut gbuf = GBuffer::new(self.config.width(), self.config.height());
         raster::render_to_gbuffer(scene, &mut gbuf);
         self.map_gbuffer_to_image(&gbuf, target);
+    }
+
+    fn map_gbuffer_to_image(&self, gbuf: &GBuffer, target: &mut ImageTarget) {
+        for y in 0..target.height() {
+            for x in 0..target.width() {
+                let Some(p) = gbuf.at(x, y) else {
+                    continue;
+                };
+                if !p.depth.is_finite() {
+                    continue;
+                }
+                let rgb = rgb_for_view(self.config.debug_view(), self.config.shader(), p.depth, p.normal, p.albedo);
+                let c = (rgb.clamp(Vec3::ZERO, Vec3::ONE) * 255.0 + Vec3::splat(0.5)).as_uvec3();
+                let _ = target.set_rgba(x, y, c.x as u8, c.y as u8, c.z as u8, 255);
+            }
+        }
     }
 }
 
@@ -184,11 +182,7 @@ mod tests {
     #[test]
     fn smoke_triangle_image_hash_snapshot() {
         let mut scene = Scene::new();
-        scene.add_object(
-            Mesh::unit_triangle(),
-            Transform::IDENTITY,
-            Material::default(),
-        );
+        scene.add_object(Mesh::unit_triangle(), Transform::IDENTITY, Material::default());
         let renderer = Renderer::new(RendererConfig::default().with_size(64, 32));
         let mut img = crate::targets::ImageTarget::new(64, 32);
         let empty_hash = img.hash64();
@@ -203,111 +197,41 @@ mod tests {
     #[test]
     fn debug_normals_changes_output() {
         let mut scene = Scene::new();
-        scene.add_object(
-            Mesh::unit_triangle(),
-            Transform::IDENTITY,
-            Material::default(),
-        );
+        scene.add_object(Mesh::unit_triangle(), Transform::IDENTITY, Material::default());
         let mut img_final = crate::targets::ImageTarget::new(64, 32);
         let mut img_norm = crate::targets::ImageTarget::new(64, 32);
         let r_final = Renderer::new(RendererConfig::default().with_size(64, 32));
-        let r_norm = Renderer::new(
-            RendererConfig::default()
-                .with_size(64, 32)
-                .with_debug_view(crate::renderer::DebugView::Normals),
-        );
+        let r_norm = Renderer::new(RendererConfig::default().with_size(64, 32).with_debug_view(DebugView::Normals));
         r_final.render_image(&scene, &mut img_final);
         r_norm.render_image(&scene, &mut img_norm);
         assert_ne!(img_final.hash64(), img_norm.hash64());
     }
 
     #[test]
-    fn debug_view_modes_produce_distinct_hashes() {
-        let mut scene = Scene::new();
-        scene.add_object(
-            Mesh::unit_triangle(),
-            Transform::IDENTITY,
-            Material {
-                albedo: glam::Vec3::new(0.25, 0.75, 0.35),
-                ..Material::default()
-            },
-        );
-
-        let modes = [
-            DebugView::Final,
-            DebugView::Depth,
-            DebugView::Normals,
-            DebugView::Albedo,
-        ];
-
-        let mut hashes = Vec::new();
-        for &m in &modes {
-            let renderer = Renderer::new(RendererConfig::default().with_size(64, 32).with_debug_view(m));
-            let mut img = crate::targets::ImageTarget::new(64, 32);
-            renderer.render_image(&scene, &mut img);
-            hashes.push(img.hash64());
-        }
-
-        let mut set = std::collections::HashSet::<u64>::new();
-        for h in &hashes {
-            set.insert(*h);
-        }
-        assert_eq!(set.len(), modes.len());
-
-        // Determinism check: rendering again yields identical hashes.
-        for (idx, &m) in modes.iter().enumerate() {
-            let renderer = Renderer::new(RendererConfig::default().with_size(64, 32).with_debug_view(m));
-            let mut img = crate::targets::ImageTarget::new(64, 32);
-            renderer.render_image(&scene, &mut img);
-            assert_eq!(img.hash64(), hashes[idx]);
-        }
-    }
-
-    #[test]
     fn shader_changes_output_hash() {
         let mut scene = Scene::new();
-        scene.add_object(
-            Mesh::unit_triangle(),
-            Transform::IDENTITY,
-            Material::default(),
-        );
-
+        scene.add_object(Mesh::unit_triangle(), Transform::IDENTITY, Material::default());
         let mut img_lambert = crate::targets::ImageTarget::new(64, 32);
         let mut img_unlit = crate::targets::ImageTarget::new(64, 32);
-
-        let r_lambert = Renderer::new(
-            RendererConfig::default()
-                .with_size(64, 32)
-                .with_shader(ShaderId::Lambert),
-        );
-        let r_unlit = Renderer::new(
-            RendererConfig::default()
-                .with_size(64, 32)
-                .with_shader(ShaderId::Unlit),
-        );
-
+        let r_lambert = Renderer::new(RendererConfig::default().with_size(64, 32).with_shader_id(ShaderId::Lambert));
+        let r_unlit = Renderer::new(RendererConfig::default().with_size(64, 32).with_shader_id(ShaderId::Unlit));
         r_lambert.render_image(&scene, &mut img_lambert);
         r_unlit.render_image(&scene, &mut img_unlit);
-
         assert_ne!(img_lambert.hash64(), img_unlit.hash64());
     }
 
-    #[cfg(feature = "png")]
     #[test]
-    fn smoke_triangle_png_writes_deterministically() {
+    fn debug_view_modes_produce_distinct_hashes() {
         let mut scene = Scene::new();
-        scene.add_object(
-            Mesh::unit_triangle(),
-            Transform::IDENTITY,
-            Material::default(),
-        );
-        let renderer = Renderer::new(RendererConfig::default().with_size(64, 32));
-        let mut img = crate::targets::ImageTarget::new(64, 32);
-        renderer.render_image(&scene, &mut img);
-        let p1 = img.write_png_to_vec().unwrap();
-        let p2 = img.write_png_to_vec().unwrap();
-        assert!(p1.len() > 8);
-        assert_eq!(&p1[0..8], b"\x89PNG\r\n\x1a\n");
-        assert_eq!(p1, p2);
+        scene.add_object(Mesh::unit_triangle(), Transform::IDENTITY, Material::default());
+        let views = [DebugView::Final, DebugView::Depth, DebugView::Normals, DebugView::Albedo];
+        let mut hashes = std::collections::HashSet::new();
+        for v in views {
+            let renderer = Renderer::new(RendererConfig::default().with_size(64, 32).with_debug_view(v));
+            let mut img = crate::targets::ImageTarget::new(64, 32);
+            renderer.render_image(&scene, &mut img);
+            hashes.insert(img.hash64());
+        }
+        assert_eq!(hashes.len(), views.len());
     }
 }

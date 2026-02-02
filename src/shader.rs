@@ -25,8 +25,8 @@ pub struct LambertShader {
 
 impl Default for LambertShader {
     fn default() -> Self {
-        // Chosen so a +Z-facing triangle is not fully lit; this ensures the
-        // built-in Lambert shader differs from Unlit even in the smoke tests.
+        
+        
         let light_dir = Vec3::new(0.2, 0.4, 1.0).normalize();
         LambertShader { light_dir, ambient: 0.15 }
     }
