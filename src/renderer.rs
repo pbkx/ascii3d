@@ -109,9 +109,15 @@ impl Renderer {
             *target = BufferTarget::new(self.config.width(), self.config.height());
         }
         target.clear(Cell::new(' ', Rgb8::BLACK, Rgb8::BLACK, f32::INFINITY));
-        let mut gbuf = GBuffer::new(self.config.width(), self.config.height());
+        let mut gbuf = match self.config.glyph_mode() {
+            GlyphMode::HalfBlock => GBuffer::new(self.config.width(), self.config.height().saturating_mul(2)),
+            _ => GBuffer::new(self.config.width(), self.config.height()),
+        };
         raster::render_to_gbuffer(scene, &mut gbuf);
-        self.map_gbuffer_to_buffer(&gbuf, target);
+        match self.config.glyph_mode() {
+            GlyphMode::HalfBlock => self.map_gbuffer_to_buffer_half_block(&gbuf, target),
+            _ => self.map_gbuffer_to_buffer(&gbuf, target),
+        }
     }
 
     fn map_gbuffer_to_buffer(&self, gbuf: &GBuffer, target: &mut BufferTarget) {
@@ -146,6 +152,68 @@ impl Renderer {
                 );
                 cell.bg = Rgb8::BLACK;
                 let _ = target.set(x, y, cell);
+            }
+        }
+    }
+
+    fn map_gbuffer_to_buffer_half_block(&self, gbuf: &GBuffer, target: &mut BufferTarget) {
+        fn to_u8_rgb(rgb: Vec3) -> Rgb8 {
+            let rgb_u8 = (rgb.clamp(Vec3::ZERO, Vec3::ONE) * 255.0 + Vec3::splat(0.5)).as_uvec3();
+            Rgb8::new(rgb_u8.x as u8, rgb_u8.y as u8, rgb_u8.z as u8)
+        }
+
+        for y in 0..target.height() {
+            let y0 = y.saturating_mul(2);
+            let y1 = y0 + 1;
+            for x in 0..target.width() {
+                let p0 = if y0 < gbuf.height() { gbuf.at(x, y0) } else { None };
+                let p1 = if y1 < gbuf.height() { gbuf.at(x, y1) } else { None };
+
+                let p0_ok = p0.map_or(false, |p| p.depth.is_finite());
+                let p1_ok = p1.map_or(false, |p| p.depth.is_finite());
+
+                if p0_ok && p1_ok {
+                    let p0 = p0.unwrap();
+                    let p1 = p1.unwrap();
+                    let rgb0 = to_u8_rgb(rgb_for_view(
+                        self.config.debug_view(),
+                        self.config.shader(),
+                        p0.depth,
+                        p0.normal,
+                        p0.albedo,
+                    ));
+                    let rgb1 = to_u8_rgb(rgb_for_view(
+                        self.config.debug_view(),
+                        self.config.shader(),
+                        p1.depth,
+                        p1.normal,
+                        p1.albedo,
+                    ));
+                    let depth = p0.depth.min(p1.depth);
+                    let _ = target.set(x, y, Cell::new('▀', rgb0, rgb1, depth));
+                } else if p0_ok {
+                    let p0 = p0.unwrap();
+                    let rgb0 = to_u8_rgb(rgb_for_view(
+                        self.config.debug_view(),
+                        self.config.shader(),
+                        p0.depth,
+                        p0.normal,
+                        p0.albedo,
+                    ));
+                    let _ = target.set(x, y, Cell::new('▀', rgb0, Rgb8::BLACK, p0.depth));
+                } else if p1_ok {
+                    let p1 = p1.unwrap();
+                    let rgb1 = to_u8_rgb(rgb_for_view(
+                        self.config.debug_view(),
+                        self.config.shader(),
+                        p1.depth,
+                        p1.normal,
+                        p1.albedo,
+                    ));
+                    let _ = target.set(x, y, Cell::new('▄', rgb1, Rgb8::BLACK, p1.depth));
+                } else {
+                    let _ = target.set(x, y, Cell::new(' ', Rgb8::BLACK, Rgb8::BLACK, f32::INFINITY));
+                }
             }
         }
     }
@@ -186,7 +254,7 @@ impl Renderer {
 
 #[cfg(test)]
 mod tests {
-    use crate::{DebugView, Material, Mesh, Renderer, RendererConfig, Scene, ShaderId, Transform};
+    use crate::{DebugView, GlyphMode, Material, Mesh, Renderer, RendererConfig, Scene, ShaderId, Transform};
 
     #[test]
     fn smoke_triangle_renders_deterministically() {
@@ -205,6 +273,44 @@ mod tests {
         renderer.render(&scene, &mut target);
         let h2 = target.hash64();
         assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn half_block_mode_changes_buffer_hash_and_uses_blocks() {
+        let mut scene = Scene::new();
+        scene.add_object(
+            Mesh::unit_triangle(),
+            Transform::from_rotation(glam::Quat::from_rotation_y(1.0)),
+            Material::default(),
+        );
+
+        let renderer_ascii = Renderer::new(RendererConfig::default().with_size(64, 32));
+        let renderer_half = Renderer::new(
+            RendererConfig::default()
+                .with_size(64, 32)
+                .with_glyph_mode(GlyphMode::HalfBlock),
+        );
+
+        let mut t_ascii = crate::targets::BufferTarget::new(64, 32);
+        let mut t_half = crate::targets::BufferTarget::new(64, 32);
+
+        renderer_ascii.render(&scene, &mut t_ascii);
+        renderer_half.render(&scene, &mut t_half);
+
+        assert_ne!(t_ascii.hash64(), t_half.hash64());
+
+        let mut saw_block = false;
+        for y in 0..t_half.height() {
+            for x in 0..t_half.width() {
+                let Some(c) = t_half.cell(x, y) else {
+                    continue;
+                };
+                if c.ch == '▀' || c.ch == '▄' {
+                    saw_block = true;
+                }
+            }
+        }
+        assert!(saw_block);
     }
 
     #[test]

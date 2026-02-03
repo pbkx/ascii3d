@@ -90,6 +90,10 @@ impl BufferTarget {
         Some(self.cells[self.idx(x, y)])
     }
 
+    pub fn cell(&self, x: usize, y: usize) -> Option<Cell> {
+        self.get(x, y)
+    }
+
     pub fn set(&mut self, x: usize, y: usize, cell: Cell) -> bool {
         if x >= self.width || y >= self.height {
             return false;
