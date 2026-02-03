@@ -68,32 +68,32 @@ impl ImageTarget {
         self.height
     }
 
-    pub fn clear_rgba(&mut self, r: u8, g: u8, b: u8, a: u8) {
+    pub fn clear_rgba(&mut self, red: u8, green: u8, blue: u8, alpha: u8) {
         for px in self.rgba.chunks_exact_mut(4) {
-            px[0] = r;
-            px[1] = g;
-            px[2] = b;
-            px[3] = a;
+            px[0] = red;
+            px[1] = green;
+            px[2] = blue;
+            px[3] = alpha;
         }
     }
 
-    pub fn set_rgba(&mut self, x: usize, y: usize, r: u8, g: u8, b: u8, a: u8) -> bool {
-        if x >= self.width || y >= self.height {
+    pub fn set_rgba(&mut self, x_px: usize, y_px: usize, red: u8, green: u8, blue: u8, alpha: u8) -> bool {
+        if x_px >= self.width || y_px >= self.height {
             return false;
         }
-        let idx = (y * self.width + x) * 4;
-        self.rgba[idx] = r;
-        self.rgba[idx + 1] = g;
-        self.rgba[idx + 2] = b;
-        self.rgba[idx + 3] = a;
+        let idx = (y_px * self.width + x_px) * 4;
+        self.rgba[idx] = red;
+        self.rgba[idx + 1] = green;
+        self.rgba[idx + 2] = blue;
+        self.rgba[idx + 3] = alpha;
         true
     }
 
-    pub fn get_rgba(&self, x: usize, y: usize) -> Option<[u8; 4]> {
-        if x >= self.width || y >= self.height {
+    pub fn get_rgba(&self, x_px: usize, y_px: usize) -> Option<[u8; 4]> {
+        if x_px >= self.width || y_px >= self.height {
             return None;
         }
-        let idx = (y * self.width + x) * 4;
+        let idx = (y_px * self.width + x_px) * 4;
         Some([
             self.rgba[idx],
             self.rgba[idx + 1],
@@ -157,10 +157,10 @@ impl ImageTarget {
         Ok(out)
     }
     pub fn hash64(&self) -> u64 {
-        let mut h: u64 = 0xcbf29ce484222325;
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
         fn mix(h: &mut u64, b: u8) {
             *h ^= b as u64;
-            *h = h.wrapping_mul(0x100000001b3);
+            *h = h.wrapping_mul(0x0100_0000_01b3);
         }
         for b in self.width.to_le_bytes() {
             mix(&mut h, b);

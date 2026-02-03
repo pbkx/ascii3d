@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-
+#![warn(clippy::all, clippy::pedantic)]
 pub mod camera;
 pub mod debug;
 pub mod glyph;
@@ -29,4 +29,5 @@ pub use crate::{
     scene::Scene,
     shader::{BuiltinShader, LambertShader, ShadeSample, Shader, ShaderId, UnlitShader},
     transform::Transform,
+    types::Rgb8,
 };

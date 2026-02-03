@@ -70,20 +70,20 @@ fn draw_tri(surf: &mut RasterSurface, v0: Vertex, v1: Vertex, v2: Vertex, materi
 
     for y in min_y..=max_y {
         for x in min_x..=max_x {
-            let p = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
-            let w0 = edge(s1, s2, p) / area;
-            let w1 = edge(s2, s0, p) / area;
-            let w2 = edge(s0, s1, p) / area;
+            let sample = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+            let w0 = edge(s1, s2, sample) / area;
+            let w1 = edge(s2, s0, sample) / area;
+            let w2 = edge(s0, s1, sample) / area;
 
             if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
                 continue;
             }
 
-            let z = w0 * v0.pos.z + w1 * v1.pos.z + w2 * v2.pos.z;
-            let n = (w0 * v0.nrm + w1 * v1.nrm + w2 * v2.nrm).normalize_or_zero();
+            let depth = w0 * v0.pos.z + w1 * v1.pos.z + w2 * v2.pos.z;
+            let normal = (w0 * v0.nrm + w1 * v1.nrm + w2 * v2.nrm).normalize_or_zero();
             let _ = surf
                 .gbuf
-                .try_write(x as usize, y as usize, z, n, material.albedo);
+                .try_write(x as usize, y as usize, depth, normal, material.albedo);
         }
     }
 }
@@ -124,23 +124,22 @@ fn rasterize_tri(
 
     let near = cam.near();
     let far = cam.far();
-
-    fn clip_edge(a: Vertex, b: Vertex, pa: Vec4, pb: Vec4, z: f32) -> (Vertex, Vec4) {
-        let t = (z - pa.z) / (pb.z - pa.z);
-        let pos = a.pos + t * (b.pos - a.pos);
-        let nrm = (a.nrm + t * (b.nrm - a.nrm)).normalize_or_zero();
-        let p = pa + t * (pb - pa);
+    fn clip_edge(vert_a: Vertex, vert_b: Vertex, pos_a: Vec4, pos_b: Vec4, z_plane: f32) -> (Vertex, Vec4) {
+        let t_param = (z_plane - pos_a.z) / (pos_b.z - pos_a.z);
+        let pos = vert_a.pos + t_param * (vert_b.pos - vert_a.pos);
+        let nrm = (vert_a.nrm + t_param * (vert_b.nrm - vert_a.nrm)).normalize_or_zero();
+        let pos_clip = pos_a + t_param * (pos_b - pos_a);
         (
             Vertex {
                 pos,
                 nrm,
             },
-            p,
+            pos_clip,
         )
     }
 
     let mut verts = vec![(v0, p0), (v1, p1), (v2, p2)];
-    for &(z, keep_greater) in &[(near, true), (far, false)] {
+    for &(plane_z, keep_greater) in &[(near, true), (far, false)] {
         let mut out: Vec<(Vertex, Vec4)> = Vec::new();
         if verts.is_empty() {
             break;
@@ -149,15 +148,15 @@ fn rasterize_tri(
             let (va, pa) = verts[i];
             let (vb, pb) = verts[(i + 1) % verts.len()];
 
-            let ina = if keep_greater { pa.z >= z } else { pa.z <= z };
-            let inb = if keep_greater { pb.z >= z } else { pb.z <= z };
+            let ina = if keep_greater { pa.z >= plane_z } else { pa.z <= plane_z };
+            let inb = if keep_greater { pb.z >= plane_z } else { pb.z <= plane_z };
 
             if ina && inb {
                 out.push((vb, pb));
             } else if ina && !inb {
-                out.push(clip_edge(va, vb, pa, pb, z));
+                out.push(clip_edge(va, vb, pa, pb, plane_z));
             } else if !ina && inb {
-                out.push(clip_edge(va, vb, pa, pb, z));
+                out.push(clip_edge(va, vb, pa, pb, plane_z));
                 out.push((vb, pb));
             }
         }

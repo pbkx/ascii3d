@@ -1,4 +1,4 @@
-use crate::targets::Cell;
+use crate::{targets::Cell, types::Rgb8};
 
 #[derive(Clone, Debug)]
 pub enum GlyphMode {
@@ -14,7 +14,7 @@ impl Default for GlyphMode {
 impl GlyphMode {
     pub fn cell_from_scalar(&self, t: f32, depth: f32) -> Cell {
         match self {
-            GlyphMode::AsciiRamp(r) => Cell::new(r.map_scalar_to_char(t), 0, 0, depth),
+            GlyphMode::AsciiRamp(r) => Cell::new(r.map_scalar_to_char(t), Rgb8::BLACK, Rgb8::BLACK, depth),
         }
     }
 

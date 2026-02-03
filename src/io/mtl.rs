@@ -124,7 +124,7 @@ mod tests {
 
     #[test]
     fn parse_mtl_extracts_basic_fields() {
-        let src = r#"
+        let src = r"
 newmtl Red
 Kd 1 0 0
 Ke 0.1 0.2 0.3
@@ -133,7 +133,7 @@ d 0.5
 newmtl Blue
 Kd 0 0 1
 Tr 0.25
-"#;
+";
         let lib = parse_mtl(src).unwrap();
         assert_eq!(lib.names.len(), 2);
         assert_eq!(lib.materials.len(), 2);

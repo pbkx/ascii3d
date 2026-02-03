@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn stl_ascii_triangle_parses() {
-        let src = r#"
+        let src = r"
 solid s
 facet normal 0 0 1
 outer loop
@@ -162,7 +162,7 @@ vertex 0 1 0
 endloop
 endfacet
 endsolid
-"#;
+";
         let mesh = load_stl_str(src).unwrap();
         assert_eq!(mesh.indices.len(), 1);
         assert_eq!(mesh.positions.len(), 3);

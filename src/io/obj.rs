@@ -345,18 +345,18 @@ mod tests {
 
     #[test]
     fn obj_triangle_parses_and_assigns_material() {
-        let obj = r#"
+        let obj = r"
 mtllib test.mtl
 v 0 0 0
 v 1 0 0
 v 0 1 0
 usemtl Red
 f 1 2 3
-"#;
-        let mtl = r#"
+";
+        let mtl = r"
 newmtl Red
 Kd 1 0 0
-"#;
+";
         let loaded = load_obj_with_mtl_str(obj, Some(mtl)).unwrap();
         assert_eq!(loaded.mesh.indices.len(), 1);
         assert_eq!(loaded.mesh.positions.len(), 3);
@@ -368,13 +368,13 @@ Kd 1 0 0
 
     #[test]
     fn obj_quad_is_triangulated() {
-        let obj = r#"
+        let obj = r"
 v 0 0 0
 v 1 0 0
 v 1 1 0
 v 0 1 0
 f 1 2 3 4
-"#;
+";
         let loaded = load_obj_with_mtl_str(obj, None).unwrap();
         assert_eq!(loaded.mesh.indices.len(), 2);
         loaded.mesh.assert_invariants();
@@ -382,12 +382,12 @@ f 1 2 3 4
 
     #[test]
     fn obj_negative_indices_work() {
-        let obj = r#"
+        let obj = r"
 v 0 0 0
 v 1 0 0
 v 0 1 0
 f -3 -2 -1
-"#;
+";
         let loaded = load_obj_with_mtl_str(obj, None).unwrap();
         assert_eq!(loaded.mesh.indices.len(), 1);
         loaded.mesh.assert_invariants();

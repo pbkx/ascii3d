@@ -6,6 +6,7 @@ use crate::{
     scene::Scene,
     shader::{BuiltinShader, ShaderId},
     targets::{BufferTarget, Cell, ImageTarget},
+    types::Rgb8,
 };
 
 use glam::Vec3;
@@ -107,7 +108,7 @@ impl Renderer {
         if target.width() != self.config.width() || target.height() != self.config.height() {
             *target = BufferTarget::new(self.config.width(), self.config.height());
         }
-        target.clear(Cell::new(' ', 0, 0, f32::INFINITY));
+        target.clear(Cell::new(' ', Rgb8::BLACK, Rgb8::BLACK, f32::INFINITY));
         let mut gbuf = GBuffer::new(self.config.width(), self.config.height());
         raster::render_to_gbuffer(scene, &mut gbuf);
         self.map_gbuffer_to_buffer(&gbuf, target);
@@ -122,8 +123,28 @@ impl Renderer {
                 if !p.depth.is_finite() {
                     continue;
                 }
-                let t = scalar_for_view(self.config.debug_view(), self.config.shader(), p.depth, p.normal, p.albedo);
-                let cell = self.config.glyph_mode().cell_from_scalar(t, p.depth);
+                let shade_scalar = scalar_for_view(
+                    self.config.debug_view(),
+                    self.config.shader(),
+                    p.depth,
+                    p.normal,
+                    p.albedo,
+                );
+                let rgb = rgb_for_view(
+                    self.config.debug_view(),
+                    self.config.shader(),
+                    p.depth,
+                    p.normal,
+                    p.albedo,
+                );
+                let rgb_u8 = (rgb.clamp(Vec3::ZERO, Vec3::ONE) * 255.0 + Vec3::splat(0.5)).as_uvec3();
+                let mut cell = self.config.glyph_mode().cell_from_scalar(shade_scalar, p.depth);
+                cell.fg = Rgb8::new(
+                    u8::try_from(rgb_u8.x).unwrap_or(255),
+                    u8::try_from(rgb_u8.y).unwrap_or(255),
+                    u8::try_from(rgb_u8.z).unwrap_or(255),
+                );
+                cell.bg = Rgb8::BLACK;
                 let _ = target.set(x, y, cell);
             }
         }
@@ -149,8 +170,15 @@ impl Renderer {
                     continue;
                 }
                 let rgb = rgb_for_view(self.config.debug_view(), self.config.shader(), p.depth, p.normal, p.albedo);
-                let c = (rgb.clamp(Vec3::ZERO, Vec3::ONE) * 255.0 + Vec3::splat(0.5)).as_uvec3();
-                let _ = target.set_rgba(x, y, c.x as u8, c.y as u8, c.z as u8, 255);
+                let rgb_u8 = (rgb.clamp(Vec3::ZERO, Vec3::ONE) * 255.0 + Vec3::splat(0.5)).as_uvec3();
+                let _ = target.set_rgba(
+                    x,
+                    y,
+                    u8::try_from(rgb_u8.x).unwrap_or(255),
+                    u8::try_from(rgb_u8.y).unwrap_or(255),
+                    u8::try_from(rgb_u8.z).unwrap_or(255),
+                    255,
+                );
             }
         }
     }

@@ -46,14 +46,14 @@ impl Projection {
             Projection::Perspective { fov_y_radians, near, far } => {
                 let f = 1.0 / (0.5 * *fov_y_radians).tan();
                 let a = aspect;
-                let n = *near;
-                let fa = *far;
+                let near_plane = *near;
+                let far_plane = *far;
 
                 
                 let m00 = f / a;
                 let m11 = f;
-                let m22 = (fa + n) / (n - fa);
-                let m23 = (2.0 * fa * n) / (n - fa);
+                let m22 = (far_plane + near_plane) / (near_plane - far_plane);
+                let m23 = (2.0 * far_plane * near_plane) / (near_plane - far_plane);
                 let m32 = -1.0;
 
                 Mat4::from_cols(
@@ -64,24 +64,24 @@ impl Projection {
                 )
             }
             Projection::Orthographic { half_height, near, far } => {
-                let hh = *half_height;
-                let hw = hh * aspect;
+                let half_h = *half_height;
+                let half_w = half_h * aspect;
 
-                let l = -hw;
-                let r = hw;
-                let b = -hh;
-                let t = hh;
+                let left = -half_w;
+                let right = half_w;
+                let bottom = -half_h;
+                let top = half_h;
 
-                let n = *near;
-                let fa = *far;
+                let near_plane = *near;
+                let far_plane = *far;
 
-                let m00 = 2.0 / (r - l);
-                let m11 = 2.0 / (t - b);
-                let m22 = -2.0 / (fa - n);
+                let m00 = 2.0 / (right - left);
+                let m11 = 2.0 / (top - bottom);
+                let m22 = -2.0 / (far_plane - near_plane);
 
-                let m03 = -(r + l) / (r - l);
-                let m13 = -(t + b) / (t - b);
-                let m23 = -(fa + n) / (fa - n);
+                let m03 = -(right + left) / (right - left);
+                let m13 = -(top + bottom) / (top - bottom);
+                let m23 = -(far_plane + near_plane) / (far_plane - near_plane);
 
                 Mat4::from_cols(
                     Vec4::new(m00, 0.0, 0.0, 0.0),
