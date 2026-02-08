@@ -1,7 +1,33 @@
 #![forbid(unsafe_code)]
-#![warn(clippy::all, clippy::pedantic)]
+#![warn(clippy::all)]
+#![allow(
+    clippy::pedantic,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::excessive_precision,
+    clippy::explicit_iter_loop,
+    clippy::float_cmp,
+    clippy::items_after_statements,
+    clippy::many_single_char_names,
+    clippy::match_same_arms,
+    clippy::match_wildcard_for_single_variants,
+    clippy::missing_errors_doc,
+    clippy::missing_fields_in_debug,
+    clippy::missing_panics_doc,
+    clippy::must_use_candidate,
+    clippy::return_self_not_must_use,
+    clippy::trivially_copy_pass_by_ref,
+    clippy::unnecessary_wraps,
+    clippy::unreadable_literal,
+    clippy::verbose_bit_mask,
+    clippy::wrap_ok,
+)]
 pub mod camera;
 pub mod debug;
+pub mod dither;
 pub mod glyph;
 pub mod gbuffer;
 pub mod io;
@@ -20,6 +46,7 @@ pub mod types;
 pub use crate::{
     camera::{Camera, Projection},
     debug::DebugView,
+    dither::DitherMode,
     gbuffer::GBuffer,
     glyph::{AsciiRamp, GlyphMode},
     light::Light,

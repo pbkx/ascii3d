@@ -1,5 +1,6 @@
 use crate::{
     debug::{rgb_for_view, scalar_for_view, DebugView},
+    dither::{Dither, DitherMode},
     glyph::{AsciiRamp, GlyphMode},
     gbuffer::GBuffer,
     raster,
@@ -18,6 +19,7 @@ pub struct RendererConfig {
     shader: BuiltinShader,
     debug_view: DebugView,
     glyph_mode: GlyphMode,
+    dither_mode: DitherMode,
 }
 
 impl Default for RendererConfig {
@@ -28,6 +30,7 @@ impl Default for RendererConfig {
             shader: BuiltinShader::from_id(ShaderId::Lambert),
             debug_view: DebugView::Final,
             glyph_mode: GlyphMode::default(),
+            dither_mode: DitherMode::None,
         }
     }
 }
@@ -57,6 +60,10 @@ impl RendererConfig {
         &self.glyph_mode
     }
 
+    pub fn dither_mode(&self) -> DitherMode {
+        self.dither_mode
+    }
+
     pub fn with_size(mut self, width: usize, height: usize) -> Self {
         self.width = width;
         self.height = height;
@@ -75,6 +82,11 @@ impl RendererConfig {
 
     pub fn with_glyph_mode(mut self, mode: GlyphMode) -> Self {
         self.glyph_mode = mode;
+        self
+    }
+
+    pub fn with_dither_mode(mut self, mode: DitherMode) -> Self {
+        self.dither_mode = mode;
         self
     }
 
@@ -121,6 +133,8 @@ impl Renderer {
     }
 
     fn map_gbuffer_to_buffer(&self, gbuf: &GBuffer, target: &mut BufferTarget) {
+        let dither_mode = self.config.dither_mode();
+        let mut dither = Dither::new(dither_mode, target.width());
         for y in 0..target.height() {
             for x in 0..target.width() {
                 let Some(p) = gbuf.at(x, y) else {
@@ -144,7 +158,29 @@ impl Renderer {
                     p.albedo,
                 );
                 let rgb_u8 = (rgb.clamp(Vec3::ZERO, Vec3::ONE) * 255.0 + Vec3::splat(0.5)).as_uvec3();
-                let mut cell = self.config.glyph_mode().cell_from_scalar(shade_scalar, p.depth);
+                let mut cell = if dither_mode == DitherMode::None {
+                    self.config.glyph_mode().cell_from_scalar(shade_scalar, p.depth)
+                } else {
+                    match self.config.glyph_mode() {
+                        GlyphMode::AsciiRamp(ramp) => {
+                            let bytes = ramp.bytes();
+                            if bytes.is_empty() {
+                                Cell::new(' ', Rgb8::BLACK, Rgb8::BLACK, p.depth)
+                            } else {
+                                let mut t = shade_scalar.clamp(0.0, 1.0);
+                                let g = ramp.gamma();
+                                if g != 1.0 {
+                                    t = t.powf(g);
+                                }
+                                let idx = dither.quantize_index(t, bytes.len(), x, y);
+                                Cell::new(bytes[idx] as char, Rgb8::BLACK, Rgb8::BLACK, p.depth)
+                            }
+                        }
+                        GlyphMode::HalfBlock => {
+                            self.config.glyph_mode().cell_from_scalar(shade_scalar, p.depth)
+                        }
+                    }
+                };
                 cell.fg = Rgb8::new(
                     u8::try_from(rgb_u8.x).unwrap_or(255),
                     u8::try_from(rgb_u8.y).unwrap_or(255),
@@ -153,6 +189,7 @@ impl Renderer {
                 cell.bg = Rgb8::BLACK;
                 let _ = target.set(x, y, cell);
             }
+            dither.finish_row();
         }
     }
 
@@ -254,7 +291,7 @@ impl Renderer {
 
 #[cfg(test)]
 mod tests {
-    use crate::{DebugView, GlyphMode, Material, Mesh, Renderer, RendererConfig, Scene, ShaderId, Transform};
+    use crate::{DebugView, DitherMode, GlyphMode, Material, Mesh, Renderer, RendererConfig, Scene, ShaderId, Transform};
 
     #[test]
     fn smoke_triangle_renders_deterministically() {
@@ -311,6 +348,56 @@ mod tests {
             }
         }
         assert!(saw_block);
+    }
+
+    #[test]
+    fn dither_modes_change_output_hash_and_are_deterministic() {
+        let mut scene = Scene::new();
+        scene.add_object(
+            Mesh::unit_triangle(),
+            Transform::IDENTITY,
+            Material::default(),
+        );
+
+        let renderer_none =
+            Renderer::new(RendererConfig::default().with_size(64, 32).with_dither_mode(DitherMode::None));
+        let renderer_ordered =
+            Renderer::new(RendererConfig::default().with_size(64, 32).with_dither_mode(DitherMode::Ordered));
+        let renderer_noise =
+            Renderer::new(RendererConfig::default().with_size(64, 32).with_dither_mode(DitherMode::BlueNoise));
+        let renderer_diff =
+            Renderer::new(RendererConfig::default().with_size(64, 32).with_dither_mode(DitherMode::ErrorDiffusion));
+
+        let mut t_none = crate::targets::BufferTarget::new(64, 32);
+        let mut t_ordered = crate::targets::BufferTarget::new(64, 32);
+        let mut t_noise = crate::targets::BufferTarget::new(64, 32);
+        let mut t_diff = crate::targets::BufferTarget::new(64, 32);
+
+        renderer_none.render(&scene, &mut t_none);
+        renderer_ordered.render(&scene, &mut t_ordered);
+        renderer_noise.render(&scene, &mut t_noise);
+        renderer_diff.render(&scene, &mut t_diff);
+
+        let h_none = t_none.hash64();
+        let h_ordered = t_ordered.hash64();
+        let h_noise = t_noise.hash64();
+        let h_diff = t_diff.hash64();
+
+        assert_ne!(h_none, h_ordered);
+        assert_ne!(h_none, h_noise);
+        assert_ne!(h_none, h_diff);
+
+        let mut t_ordered_2 = crate::targets::BufferTarget::new(64, 32);
+        renderer_ordered.render(&scene, &mut t_ordered_2);
+        assert_eq!(h_ordered, t_ordered_2.hash64());
+
+        let mut t_noise_2 = crate::targets::BufferTarget::new(64, 32);
+        renderer_noise.render(&scene, &mut t_noise_2);
+        assert_eq!(h_noise, t_noise_2.hash64());
+
+        let mut t_diff_2 = crate::targets::BufferTarget::new(64, 32);
+        renderer_diff.render(&scene, &mut t_diff_2);
+        assert_eq!(h_diff, t_diff_2.hash64());
     }
 
     #[test]

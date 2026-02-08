@@ -1,5 +1,5 @@
 pub use crate::{
-    AsciiRamp, BuiltinShader, Camera, DebugView, GBuffer, GlyphMode, LambertShader, Light, Material,
+    AsciiRamp, BuiltinShader, Camera, DebugView, DitherMode, GBuffer, GlyphMode, LambertShader, Light, Material,
     Mesh, Projection, Renderer, RendererConfig, Scene, ShadeSample, Shader, ShaderId, Transform,
     UnlitShader,
     Rgb8,
