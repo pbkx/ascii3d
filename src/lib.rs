@@ -40,6 +40,7 @@ pub mod renderer;
 pub mod scene;
 pub mod shader;
 pub mod targets;
+pub mod temporal;
 pub mod transform;
 pub mod types;
 
@@ -55,6 +56,7 @@ pub use crate::{
     renderer::{Renderer, RendererConfig},
     scene::Scene,
     shader::{BuiltinShader, LambertShader, ShadeSample, Shader, ShaderId, UnlitShader},
+    temporal::TemporalConfig,
     transform::Transform,
     types::Rgb8,
 };

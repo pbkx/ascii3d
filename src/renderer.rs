@@ -6,11 +6,13 @@ use crate::{
     raster,
     scene::Scene,
     shader::{BuiltinShader, ShaderId},
+    temporal::{TemporalConfig, TemporalQuantizer, TemporalState},
     targets::{BufferTarget, Cell, ImageTarget},
     types::Rgb8,
 };
 
 use glam::Vec3;
+use std::cell::RefCell;
 
 #[derive(Clone, Debug)]
 pub struct RendererConfig {
@@ -20,6 +22,7 @@ pub struct RendererConfig {
     debug_view: DebugView,
     glyph_mode: GlyphMode,
     dither_mode: DitherMode,
+    temporal: TemporalConfig,
 }
 
 impl Default for RendererConfig {
@@ -31,6 +34,7 @@ impl Default for RendererConfig {
             debug_view: DebugView::Final,
             glyph_mode: GlyphMode::default(),
             dither_mode: DitherMode::None,
+            temporal: TemporalConfig::default(),
         }
     }
 }
@@ -64,6 +68,10 @@ impl RendererConfig {
         self.dither_mode
     }
 
+    pub fn temporal(&self) -> &TemporalConfig {
+        &self.temporal
+    }
+
     pub fn with_size(mut self, width: usize, height: usize) -> Self {
         self.width = width;
         self.height = height;
@@ -90,6 +98,31 @@ impl RendererConfig {
         self
     }
 
+    pub fn with_temporal_config(mut self, config: TemporalConfig) -> Self {
+        self.temporal = config;
+        self
+    }
+
+    pub fn with_temporal_enabled(mut self, enabled: bool) -> Self {
+        self.temporal.enabled = enabled;
+        self
+    }
+
+    pub fn with_temporal_ema_alpha(mut self, alpha: f32) -> Self {
+        self.temporal.ema_alpha = alpha;
+        self
+    }
+
+    pub fn with_temporal_hysteresis(mut self, hysteresis: f32) -> Self {
+        self.temporal.hysteresis = hysteresis;
+        self
+    }
+
+    pub fn with_temporal_anchored_dither(mut self, anchored: bool) -> Self {
+        self.temporal.anchored_dither = anchored;
+        self
+    }
+
     pub fn with_ascii_ramp(self, ramp: AsciiRamp) -> Self {
         self.with_glyph_mode(GlyphMode::AsciiRamp(ramp))
     }
@@ -109,11 +142,15 @@ impl RendererConfig {
 
 pub struct Renderer {
     config: RendererConfig,
+    temporal: RefCell<TemporalState>,
 }
 
 impl Renderer {
     pub fn new(config: RendererConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            temporal: RefCell::new(TemporalState::new()),
+        }
     }
 
     pub fn render(&self, scene: &Scene, target: &mut BufferTarget) {
@@ -135,6 +172,11 @@ impl Renderer {
     fn map_gbuffer_to_buffer(&self, gbuf: &GBuffer, target: &mut BufferTarget) {
         let dither_mode = self.config.dither_mode();
         let mut dither = Dither::new(dither_mode, target.width());
+        let temporal_cfg = self.config.temporal();
+        let mut temporal = self.temporal.borrow_mut();
+        if temporal_cfg.enabled {
+            temporal.resize(target.width(), target.height());
+        }
         for y in 0..target.height() {
             for x in 0..target.width() {
                 let Some(p) = gbuf.at(x, y) else {
@@ -158,28 +200,43 @@ impl Renderer {
                     p.albedo,
                 );
                 let rgb_u8 = (rgb.clamp(Vec3::ZERO, Vec3::ONE) * 255.0 + Vec3::splat(0.5)).as_uvec3();
-                let mut cell = if dither_mode == DitherMode::None {
-                    self.config.glyph_mode().cell_from_scalar(shade_scalar, p.depth)
-                } else {
-                    match self.config.glyph_mode() {
-                        GlyphMode::AsciiRamp(ramp) => {
-                            let bytes = ramp.bytes();
-                            if bytes.is_empty() {
-                                Cell::new(' ', Rgb8::BLACK, Rgb8::BLACK, p.depth)
-                            } else {
-                                let mut t = shade_scalar.clamp(0.0, 1.0);
-                                let g = ramp.gamma();
-                                if g != 1.0 {
-                                    t = t.powf(g);
-                                }
-                                let idx = dither.quantize_index(t, bytes.len(), x, y);
-                                Cell::new(bytes[idx] as char, Rgb8::BLACK, Rgb8::BLACK, p.depth)
+                let mut cell = match self.config.glyph_mode() {
+                    GlyphMode::AsciiRamp(ramp) => {
+                        let bytes = ramp.bytes();
+                        if bytes.is_empty() {
+                            Cell::new(' ', Rgb8::BLACK, Rgb8::BLACK, p.depth)
+                        } else {
+                            let mut t = shade_scalar.clamp(0.0, 1.0);
+                            let g = ramp.gamma();
+                            if g != 1.0 {
+                                t = t.powf(g);
                             }
-                        }
-                        GlyphMode::HalfBlock => {
-                            self.config.glyph_mode().cell_from_scalar(shade_scalar, p.depth)
+
+                            let idx = if temporal_cfg.enabled {
+                                let mut q = if temporal_cfg.anchored_dither && dither_mode == DitherMode::None {
+                                    TemporalQuantizer::Anchored
+                                } else {
+                                    TemporalQuantizer::Dither(&mut dither)
+                                };
+                                temporal.step_index(x, y, t, bytes.len(), &mut q, temporal_cfg)
+                            } else {
+                                if dither_mode == DitherMode::None {
+                                    if bytes.len() <= 1 {
+                                        0
+                                    } else {
+                                        let s = t * (bytes.len() as f32 - 1.0);
+                                        (s + 0.5).floor() as usize
+                                    }
+                                } else {
+                                    dither.quantize_index(t, bytes.len(), x, y)
+                                }
+                            };
+
+                            let idx = idx.min(bytes.len().saturating_sub(1));
+                            Cell::new(bytes[idx] as char, Rgb8::BLACK, Rgb8::BLACK, p.depth)
                         }
                     }
+                    GlyphMode::HalfBlock => self.config.glyph_mode().cell_from_scalar(shade_scalar, p.depth),
                 };
                 cell.fg = Rgb8::new(
                     u8::try_from(rgb_u8.x).unwrap_or(255),
@@ -291,7 +348,7 @@ impl Renderer {
 
 #[cfg(test)]
 mod tests {
-    use crate::{DebugView, DitherMode, GlyphMode, Material, Mesh, Renderer, RendererConfig, Scene, ShaderId, Transform};
+    use crate::{DebugView, DitherMode, GlyphMode, Material, Mesh, Renderer, RendererConfig, Scene, ShaderId, TemporalConfig, Transform};
 
     #[test]
     fn smoke_triangle_renders_deterministically() {
@@ -454,5 +511,81 @@ mod tests {
             hashes.insert(img.hash64());
         }
         assert_eq!(hashes.len(), views.len());
+    }
+
+    fn glyph_churn(a: &crate::targets::BufferTarget, b: &crate::targets::BufferTarget) -> f32 {
+        assert_eq!(a.width(), b.width());
+        assert_eq!(a.height(), b.height());
+        let mut changed = 0usize;
+        let mut total = 0usize;
+        for (ca, cb) in a.as_slice().iter().zip(b.as_slice().iter()) {
+            let mask = ca.ch != ' ' || cb.ch != ' ';
+            if !mask {
+                continue;
+            }
+            total += 1;
+            if ca.ch != cb.ch {
+                changed += 1;
+            }
+        }
+        if total == 0 {
+            return 0.0;
+        }
+        (changed as f32) / (total as f32)
+    }
+
+    fn make_scene(angle: f32) -> Scene {
+        let mut scene = Scene::new();
+        scene.add_object(
+            Mesh::unit_cube(),
+            Transform::from_rotation(glam::Quat::from_rotation_y(angle)),
+            Material::default(),
+        );
+        scene
+    }
+
+
+    #[test]
+    fn temporal_reduces_glyph_churn_two_frames() {
+        let scene_a = make_scene(0.55);
+        let scene_b = make_scene(0.57);
+
+        let w = 80;
+        let h = 40;
+
+        let renderer_no_temporal = Renderer::new(
+            RendererConfig::default()
+                .with_size(w, h)
+                .with_dither_mode(DitherMode::BlueNoise)
+                .with_temporal_enabled(false),
+        );
+        let mut a1 = crate::targets::BufferTarget::new(w, h);
+        let mut a2 = crate::targets::BufferTarget::new(w, h);
+        renderer_no_temporal.render(&scene_a, &mut a1);
+        renderer_no_temporal.render(&scene_b, &mut a2);
+
+        let churn_no = glyph_churn(&a1, &a2);
+        assert!(churn_no > 0.01);
+
+        let renderer_temporal = Renderer::new(
+            RendererConfig::default()
+                .with_size(w, h)
+                .with_dither_mode(DitherMode::BlueNoise)
+                .with_temporal_config(TemporalConfig {
+                    enabled: true,
+                    ema_alpha: 0.35,
+                    hysteresis: 0.02,
+                    anchored_dither: true,
+                }),
+        );
+
+        let mut b1 = crate::targets::BufferTarget::new(w, h);
+        let mut b2 = crate::targets::BufferTarget::new(w, h);
+        renderer_temporal.render(&scene_a, &mut b1);
+        renderer_temporal.render(&scene_b, &mut b2);
+
+        let churn_temporal = glyph_churn(&b1, &b2);
+        assert!(churn_temporal < churn_no);
+        assert!(churn_temporal <= churn_no * 0.9);
     }
 }
