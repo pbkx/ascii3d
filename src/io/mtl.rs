@@ -87,13 +87,26 @@ pub fn parse_mtl(src: &str) -> Result<MtlLibrary, MtlError> {
                 cur_material = Material::default();
                 cur_name = it.next().map(|s| s.to_string());
             }
+            "Ka" => {
+                let rest: Vec<&str> = it.collect();
+                cur_material.ka = parse_vec3(&rest)?;
+            }
             "Kd" => {
                 let rest: Vec<&str> = it.collect();
-                cur_material.albedo = parse_vec3(&rest)?;
+                cur_material.kd = parse_vec3(&rest)?;
+            }
+            "Ks" => {
+                let rest: Vec<&str> = it.collect();
+                cur_material.ks = parse_vec3(&rest)?;
+            }
+            "Ns" => {
+                if let Some(v) = it.next() {
+                    cur_material.ns = parse_f32(v)?;
+                }
             }
             "Ke" => {
                 let rest: Vec<&str> = it.collect();
-                cur_material.emissive = parse_vec3(&rest)?;
+                cur_material.ke = parse_vec3(&rest)?;
             }
             "d" => {
                 if let Some(v) = it.next() {
@@ -126,12 +139,18 @@ mod tests {
     fn parse_mtl_extracts_basic_fields() {
         let src = r"
 newmtl Red
+	Ka 0.01 0.02 0.03
 Kd 1 0 0
-Ke 0.1 0.2 0.3
+	Ks 0.4 0.5 0.6
+	Ns 96
+	Ke 0.1 0.2 0.3
 d 0.5
 
 newmtl Blue
+	Ka 0 0 0
 Kd 0 0 1
+	Ks 0 0 0
+	Ns 4
 Tr 0.25
 ";
         let lib = parse_mtl(src).unwrap();
@@ -139,12 +158,15 @@ Tr 0.25
         assert_eq!(lib.materials.len(), 2);
 
         let red = lib.materials[lib.index_of("Red").unwrap()];
-        assert_eq!(red.albedo, Vec3::new(1.0, 0.0, 0.0));
-        assert_eq!(red.emissive, Vec3::new(0.1, 0.2, 0.3));
+	    assert_eq!(red.ka, Vec3::new(0.01, 0.02, 0.03));
+	    assert_eq!(red.kd, Vec3::new(1.0, 0.0, 0.0));
+	    assert_eq!(red.ks, Vec3::new(0.4, 0.5, 0.6));
+	    assert!((red.ns - 96.0).abs() < 1e-6);
+	    assert_eq!(red.ke, Vec3::new(0.1, 0.2, 0.3));
         assert!((red.alpha - 0.5).abs() < 1e-6);
 
         let blue = lib.materials[lib.index_of("Blue").unwrap()];
-        assert_eq!(blue.albedo, Vec3::new(0.0, 0.0, 1.0));
+	    assert_eq!(blue.kd, Vec3::new(0.0, 0.0, 1.0));
         assert!((blue.alpha - 0.75).abs() < 1e-6);
     }
 }

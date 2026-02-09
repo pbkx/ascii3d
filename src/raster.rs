@@ -81,9 +81,16 @@ fn draw_tri(surf: &mut RasterSurface, v0: Vertex, v1: Vertex, v2: Vertex, materi
 
             let depth = w0 * v0.pos.z + w1 * v1.pos.z + w2 * v2.pos.z;
             let normal = (w0 * v0.nrm + w1 * v1.nrm + w2 * v2.nrm).normalize_or_zero();
-            let _ = surf
-                .gbuf
-                .try_write(x as usize, y as usize, depth, normal, material.albedo);
+            let _ = surf.gbuf.try_write(
+                x as usize,
+                y as usize,
+                depth,
+                normal,
+                material.kd,
+                material.ks,
+                material.ns,
+                material.ke,
+            );
         }
     }
 }

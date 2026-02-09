@@ -1,31 +1,42 @@
 use glam::Vec3;
 
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Debug, Clone, Copy)]
 pub struct GBufferPixel {
     pub depth: f32,
     pub normal: Vec3,
-    pub albedo: Vec3,
+    pub kd: Vec3,
+    pub ks: Vec3,
+    pub ns: f32,
+    pub ke: Vec3,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone)]
 pub struct GBuffer {
     width: usize,
     height: usize,
     depth: Vec<f32>,
     normal: Vec<Vec3>,
-    albedo: Vec<Vec3>,
+    kd: Vec<Vec3>,
+    ks: Vec<Vec3>,
+    ns: Vec<f32>,
+    ke: Vec<Vec3>,
 }
 
 impl GBuffer {
     pub fn new(width: usize, height: usize) -> Self {
-        let n = width.saturating_mul(height);
-        Self {
+        let n = width * height;
+        let mut g = Self {
             width,
             height,
-            depth: vec![f32::INFINITY; n],
+            depth: vec![0.0; n],
             normal: vec![Vec3::ZERO; n],
-            albedo: vec![Vec3::ZERO; n],
-        }
+            kd: vec![Vec3::ZERO; n],
+            ks: vec![Vec3::ZERO; n],
+            ns: vec![0.0; n],
+            ke: vec![Vec3::ZERO; n],
+        };
+        g.clear();
+        g
     }
 
     pub fn width(&self) -> usize {
@@ -37,9 +48,66 @@ impl GBuffer {
     }
 
     pub fn clear(&mut self) {
-        self.depth.fill(f32::INFINITY);
+        let n = self.width * self.height;
+        self.depth.fill(1e9);
         self.normal.fill(Vec3::ZERO);
-        self.albedo.fill(Vec3::ZERO);
+        self.kd.fill(Vec3::new(0.7, 0.7, 0.7));
+        self.ks.fill(Vec3::ZERO);
+        self.ns.fill(0.0);
+        self.ke.fill(Vec3::ZERO);
+        debug_assert_eq!(self.depth.len(), n);
+        debug_assert_eq!(self.normal.len(), n);
+        debug_assert_eq!(self.kd.len(), n);
+        debug_assert_eq!(self.ks.len(), n);
+        debug_assert_eq!(self.ns.len(), n);
+        debug_assert_eq!(self.ke.len(), n);
+    }
+
+    fn idx(&self, x: usize, y: usize) -> Option<usize> {
+        if x >= self.width || y >= self.height {
+            None
+        } else {
+            Some(y * self.width + x)
+        }
+    }
+
+    pub fn try_write(
+        &mut self,
+        x: usize,
+        y: usize,
+        depth: f32,
+        normal: Vec3,
+        kd: Vec3,
+        ks: Vec3,
+        ns: f32,
+        ke: Vec3,
+    ) -> bool {
+        let Some(i) = self.idx(x, y) else {
+            return false;
+        };
+        if depth < self.depth[i] {
+            self.depth[i] = depth;
+            self.normal[i] = normal;
+            self.kd[i] = kd;
+            self.ks[i] = ks;
+            self.ns[i] = ns;
+            self.ke[i] = ke;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn at(&self, x: usize, y: usize) -> Option<GBufferPixel> {
+        let i = self.idx(x, y)?;
+        Some(GBufferPixel {
+            depth: self.depth[i],
+            normal: self.normal[i],
+            kd: self.kd[i],
+            ks: self.ks[i],
+            ns: self.ns[i],
+            ke: self.ke[i],
+        })
     }
 
     pub fn depth_slice(&self) -> &[f32] {
@@ -50,34 +118,24 @@ impl GBuffer {
         &self.normal
     }
 
+    // Backwards-compatible alias (the old API was `albedo`).
     pub fn albedo_slice(&self) -> &[Vec3] {
-        &self.albedo
+        &self.kd
     }
 
-    pub fn try_write(&mut self, x: usize, y: usize, depth: f32, normal: Vec3, albedo: Vec3) -> bool {
-        if x >= self.width || y >= self.height {
-            return false;
-        }
-        let i = y * self.width + x;
-        if depth < self.depth[i] {
-            self.depth[i] = depth;
-            self.normal[i] = normal;
-            self.albedo[i] = albedo;
-            true
-        } else {
-            false
-        }
+    pub fn kd_slice(&self) -> &[Vec3] {
+        &self.kd
     }
 
-    pub fn at(&self, x: usize, y: usize) -> Option<GBufferPixel> {
-        if x >= self.width || y >= self.height {
-            return None;
-        }
-        let i = y * self.width + x;
-        Some(GBufferPixel {
-            depth: self.depth[i],
-            normal: self.normal[i],
-            albedo: self.albedo[i],
-        })
+    pub fn ks_slice(&self) -> &[Vec3] {
+        &self.ks
+    }
+
+    pub fn ns_slice(&self) -> &[f32] {
+        &self.ns
+    }
+
+    pub fn ke_slice(&self) -> &[Vec3] {
+        &self.ke
     }
 }

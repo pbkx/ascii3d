@@ -2,7 +2,7 @@ use glam::Vec3;
 
 use crate::shader::{BuiltinShader, Shader};
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum DebugView {
     #[default]
     Final,
@@ -21,34 +21,53 @@ impl DebugView {
         }
     }
 
-    pub fn parse(s: &str) -> Option<Self> {
-        match s.trim().to_lowercase().as_str() {
-            "final" | "f" => Some(DebugView::Final),
-            "depth" | "d" => Some(DebugView::Depth),
-            "normals" | "n" => Some(DebugView::Normals),
-            "albedo" | "a" => Some(DebugView::Albedo),
-            _ => None,
-        }
+    pub fn parse(s: &str) -> Option<DebugView> {
+        Some(match s.trim().to_ascii_lowercase().as_str() {
+            "final" => DebugView::Final,
+            "depth" => DebugView::Depth,
+            "normals" | "normal" => DebugView::Normals,
+            "albedo" | "kd" => DebugView::Albedo,
+            _ => return None,
+        })
     }
 }
 
-pub fn scalar_for_view(view: DebugView, shader: &BuiltinShader, depth: f32, normal: Vec3, albedo: Vec3) -> f32 {
+fn luma(rgb: Vec3) -> f32 {
+    (0.2126 * rgb.x + 0.7152 * rgb.y + 0.0722 * rgb.z).clamp(0.0, 1.0)
+}
+
+pub fn scalar_for_view(
+    view: DebugView,
+    shader: &BuiltinShader,
+    depth: f32,
+    normal: Vec3,
+    kd: Vec3,
+    ks: Vec3,
+    ns: f32,
+    ke: Vec3,
+) -> f32 {
     match view {
-        DebugView::Final => shader.shade(depth, normal, albedo).intensity,
-        DebugView::Depth => (1.0 - depth / 10.0).clamp(0.0, 1.0),
-        DebugView::Normals => (normal.dot(Vec3::new(0.0, 0.0, 1.0)) * 0.5 + 0.5).clamp(0.0, 1.0),
-        DebugView::Albedo => (0.2126 * albedo.x + 0.7152 * albedo.y + 0.0722 * albedo.z).clamp(0.0, 1.0),
+        DebugView::Final => shader.shade_scalar(depth, normal, kd, ks, ns, ke),
+        DebugView::Depth => depth,
+        DebugView::Normals => (0.5 + 0.5 * normal.z).clamp(0.0, 1.0),
+        DebugView::Albedo => luma(kd),
     }
 }
 
-pub fn rgb_for_view(view: DebugView, shader: &BuiltinShader, depth: f32, normal: Vec3, albedo: Vec3) -> Vec3 {
+pub fn rgb_for_view(
+    view: DebugView,
+    shader: &BuiltinShader,
+    depth: f32,
+    normal: Vec3,
+    kd: Vec3,
+    ks: Vec3,
+    ns: f32,
+    ke: Vec3,
+) -> Vec3 {
     match view {
-        DebugView::Final => shader.shade(depth, normal, albedo).rgb.clamp(Vec3::ZERO, Vec3::ONE),
-        DebugView::Depth => {
-            let t = scalar_for_view(DebugView::Depth, shader, depth, normal, albedo);
-            Vec3::splat(t)
-        }
-        DebugView::Normals => (normal * 0.5 + Vec3::splat(0.5)).clamp(Vec3::ZERO, Vec3::ONE),
-        DebugView::Albedo => albedo.clamp(Vec3::ZERO, Vec3::ONE),
+        DebugView::Final => shader.shade_rgb(depth, normal, kd, ks, ns, ke),
+        DebugView::Depth => Vec3::splat(depth),
+        DebugView::Normals => (normal + Vec3::ONE) * 0.5,
+        DebugView::Albedo => kd,
     }
 }
