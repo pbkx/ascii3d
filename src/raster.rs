@@ -2,6 +2,10 @@ use glam::{Mat4, Vec2, Vec3, Vec4};
 
 use crate::{Camera, GBuffer, Material, Scene, Texture};
 
+use std::cell::RefCell;
+
+type ClipVert = (Vertex, Vec4);
+
 #[derive(Copy, Clone, Debug)]
 struct Vertex {
     pos: Vec3,
@@ -33,6 +37,36 @@ impl<'a> RasterSurface<'a> {
     }
 }
 
+pub(crate) struct Scratch {
+    clip_a: Vec<ClipVert>,
+    clip_b: Vec<ClipVert>,
+    grow_events: usize,
+    last_grow_events: usize,
+}
+
+impl Scratch {
+    fn new() -> Self {
+        Self {
+            clip_a: Vec::with_capacity(8),
+            clip_b: Vec::with_capacity(8),
+            grow_events: 0,
+            last_grow_events: 0,
+        }
+    }
+
+    fn begin_frame(&mut self) {
+        self.grow_events = 0;
+    }
+
+    fn finish_frame(&mut self) {
+        self.last_grow_events = self.grow_events;
+    }
+}
+
+thread_local! {
+    static TL_SCRATCH: RefCell<Scratch> = RefCell::new(Scratch::new());
+}
+
 fn project_to_screen(pos: Vec3, width: u32, height: u32) -> Vec2 {
     Vec2::new(
         (pos.x * 0.5 + 0.5) * (width.saturating_sub(1) as f32),
@@ -42,6 +76,30 @@ fn project_to_screen(pos: Vec3, width: u32, height: u32) -> Vec2 {
 
 fn edge(a: Vec2, b: Vec2, c: Vec2) -> f32 {
     (c.x - a.x) * (b.y - a.y) - (c.y - a.y) * (b.x - a.x)
+}
+
+fn push_checked(out: &mut Vec<ClipVert>, grow_events: &mut usize, v: ClipVert) {
+    if out.len() == out.capacity() {
+        *grow_events += 1;
+        out.reserve(1);
+    }
+    out.push(v);
+}
+
+fn clip_edge(vert_a: Vertex, vert_b: Vertex, pos_a: Vec4, pos_b: Vec4, z_plane: f32) -> ClipVert {
+    let t_param = (z_plane - pos_a.z) / (pos_b.z - pos_a.z);
+    let pos = vert_a.pos + t_param * (vert_b.pos - vert_a.pos);
+    let nrm = (vert_a.nrm + t_param * (vert_b.nrm - vert_a.nrm)).normalize_or_zero();
+    let uv = vert_a.uv + t_param * (vert_b.uv - vert_a.uv);
+    let pos_clip = pos_a + t_param * (pos_b - pos_a);
+    (
+        Vertex {
+            pos,
+            nrm,
+            uv,
+        },
+        pos_clip,
+    )
 }
 
 fn draw_tri(
@@ -113,6 +171,7 @@ fn draw_tri(
 fn rasterize_tri(
     surf: &mut RasterSurface,
     cam: &Camera,
+    scratch: &mut Scratch,
     tri: &Tri,
     mv: Mat4,
     mvp: Mat4,
@@ -148,49 +207,51 @@ fn rasterize_tri(
     let p1 = v1c / v1c.w;
     let p2 = v2c / v2c.w;
 
+    scratch.clip_a.clear();
+    scratch.clip_b.clear();
+    scratch.clip_a.push((v0, p0));
+    scratch.clip_a.push((v1, p1));
+    scratch.clip_a.push((v2, p2));
+
     let near = cam.near();
     let far = cam.far();
-    fn clip_edge(vert_a: Vertex, vert_b: Vertex, pos_a: Vec4, pos_b: Vec4, z_plane: f32) -> (Vertex, Vec4) {
-        let t_param = (z_plane - pos_a.z) / (pos_b.z - pos_a.z);
-        let pos = vert_a.pos + t_param * (vert_b.pos - vert_a.pos);
-        let nrm = (vert_a.nrm + t_param * (vert_b.nrm - vert_a.nrm)).normalize_or_zero();
-        let uv = vert_a.uv + t_param * (vert_b.uv - vert_a.uv);
-        let pos_clip = pos_a + t_param * (pos_b - pos_a);
-        (
-            Vertex {
-                pos,
-                nrm,
-                uv,
-            },
-            pos_clip,
-        )
-    }
 
-    let mut verts = vec![(v0, p0), (v1, p1), (v2, p2)];
+    let mut in_is_a = true;
     for &(plane_z, keep_greater) in &[(near, true), (far, false)] {
-        let mut out: Vec<(Vertex, Vec4)> = Vec::new();
-        if verts.is_empty() {
+        let (in_buf, out_buf) = if in_is_a {
+            (&scratch.clip_a, &mut scratch.clip_b)
+        } else {
+            (&scratch.clip_b, &mut scratch.clip_a)
+        };
+        out_buf.clear();
+
+        if in_buf.is_empty() {
+            in_is_a = !in_is_a;
             break;
         }
-        for i in 0..verts.len() {
-            let (va, pa) = verts[i];
-            let (vb, pb) = verts[(i + 1) % verts.len()];
+
+        let n = in_buf.len();
+        for i in 0..n {
+            let (va, pa) = in_buf[i];
+            let (vb, pb) = in_buf[(i + 1) % n];
 
             let ina = if keep_greater { pa.z >= plane_z } else { pa.z <= plane_z };
             let inb = if keep_greater { pb.z >= plane_z } else { pb.z <= plane_z };
 
             if ina && inb {
-                out.push((vb, pb));
+                push_checked(out_buf, &mut scratch.grow_events, (vb, pb));
             } else if ina && !inb {
-                out.push(clip_edge(va, vb, pa, pb, plane_z));
+                push_checked(out_buf, &mut scratch.grow_events, clip_edge(va, vb, pa, pb, plane_z));
             } else if !ina && inb {
-                out.push(clip_edge(va, vb, pa, pb, plane_z));
-                out.push((vb, pb));
+                push_checked(out_buf, &mut scratch.grow_events, clip_edge(va, vb, pa, pb, plane_z));
+                push_checked(out_buf, &mut scratch.grow_events, (vb, pb));
             }
         }
-        verts = out;
+
+        in_is_a = !in_is_a;
     }
 
+    let verts = if in_is_a { &scratch.clip_a } else { &scratch.clip_b };
     if verts.len() < 3 {
         return;
     }
@@ -212,7 +273,7 @@ fn rasterize_tri(
     }
 }
 
-fn rasterize(scene: &Scene, cam: &Camera, surf: &mut RasterSurface) {
+fn rasterize(scene: &Scene, cam: &Camera, surf: &mut RasterSurface, scratch: &mut Scratch) {
     for (mesh, material, transform) in scene.iter_objects() {
         let mv = cam.view_matrix() * transform.to_mat4();
         let aspect = surf.cfg.width as f32 / surf.cfg.height as f32;
@@ -256,17 +317,50 @@ fn rasterize(scene: &Scene, cam: &Camera, surf: &mut RasterSurface) {
                 },
             };
 
-            rasterize_tri(surf, cam, &tri, mv, mvp, nm, material, tex);
+            rasterize_tri(surf, cam, scratch, &tri, mv, mvp, nm, material, tex);
         }
     }
 }
 
-pub fn render_to_gbuffer(scene: &Scene, gbuf: &mut GBuffer) {
+fn render_to_gbuffer_with_scratch(scene: &Scene, gbuf: &mut GBuffer, scratch: &mut Scratch) {
     let cfg = RasterConfig {
         width: gbuf.width() as u32,
         height: gbuf.height() as u32,
     };
     gbuf.clear();
+    scratch.begin_frame();
     let mut surf = RasterSurface::new(cfg, gbuf);
-    rasterize(scene, &scene.camera, &mut surf);
+    rasterize(scene, &scene.camera, &mut surf, scratch);
+    scratch.finish_frame();
+}
+
+pub fn render_to_gbuffer(scene: &Scene, gbuf: &mut GBuffer) {
+    TL_SCRATCH.with(|s| {
+        let mut scratch = s.borrow_mut();
+        render_to_gbuffer_with_scratch(scene, gbuf, &mut scratch);
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn scratch_grow_events_last_frame() -> usize {
+    TL_SCRATCH.with(|s| s.borrow().last_grow_events)
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{GBuffer, Material, Mesh, Scene, Transform};
+
+    #[test]
+    fn pr21_raster_clip_scratch_does_not_grow() {
+        let mut scene = Scene::new();
+        let mesh = Mesh::unit_cube();
+        scene.add_object(mesh, Transform::default(), Material::default());
+
+        let mut gbuf = GBuffer::new(64, 64);
+        render_to_gbuffer(&scene, &mut gbuf);
+
+        assert_eq!(scratch_grow_events_last_frame(), 0);
+    }
 }
