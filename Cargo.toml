@@ -22,11 +22,15 @@ optional = true
 version = "0.29.0"
 optional = true
 
+[dependencies.rayon]
+version = "1.11.0"
+optional = true
+
 [features]
 default = []
 
 terminal = ["dep:crossterm"]
 png = []
 gltf = []
-rayon = []
+rayon = ["dep:rayon"]
 image = ["dep:image"]

@@ -24,6 +24,18 @@ pub struct GBuffer {
     ke: Vec<Vec3>,
 }
 
+#[cfg(feature = "rayon")]
+pub(crate) struct GBufferSlicesMut<'a> {
+    pub depth: &'a mut [f32],
+    pub nx: &'a mut [f32],
+    pub ny: &'a mut [f32],
+    pub nz: &'a mut [f32],
+    pub kd: &'a mut [Vec3],
+    pub ks: &'a mut [Vec3],
+    pub ns: &'a mut [f32],
+    pub ke: &'a mut [Vec3],
+}
+
 impl GBuffer {
     pub fn new(width: usize, height: usize) -> Self {
         let n = width * height;
@@ -154,5 +166,19 @@ impl GBuffer {
 
     pub fn ke_slice(&self) -> &[Vec3] {
         &self.ke
+    }
+
+    #[cfg(feature = "rayon")]
+    pub(crate) fn slices_mut(&mut self) -> GBufferSlicesMut<'_> {
+        GBufferSlicesMut {
+            depth: &mut self.depth,
+            nx: &mut self.nx,
+            ny: &mut self.ny,
+            nz: &mut self.nz,
+            kd: &mut self.kd,
+            ks: &mut self.ks,
+            ns: &mut self.ns,
+            ke: &mut self.ke,
+        }
     }
 }

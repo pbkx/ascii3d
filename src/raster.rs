@@ -4,6 +4,12 @@ use crate::{Camera, GBuffer, Material, Scene, Texture, TextureHandle};
 
 use std::cell::RefCell;
 
+#[cfg(feature = "rayon")]
+use crate::gbuffer::GBufferSlicesMut;
+
+#[cfg(feature = "rayon")]
+use rayon::prelude::*;
+
 type ClipVert = (Vertex, Vec4);
 
 #[derive(Copy, Clone, Debug)]
@@ -194,6 +200,7 @@ fn draw_tri(
 }
 
 
+#[cfg(not(feature = "rayon"))]
 fn draw_tri_params_clamped(
     surf: &mut RasterSurface,
     v0: Vertex,
@@ -274,6 +281,250 @@ fn draw_tri_params_clamped(
             );
         }
     }
+}
+
+#[cfg(feature = "rayon")]
+struct GBufferChunkMut<'a> {
+    width: usize,
+    y0: usize,
+    depth: &'a mut [f32],
+    nx: &'a mut [f32],
+    ny: &'a mut [f32],
+    nz: &'a mut [f32],
+    kd: &'a mut [Vec3],
+    ks: &'a mut [Vec3],
+    ns: &'a mut [f32],
+    ke: &'a mut [Vec3],
+}
+
+#[cfg(feature = "rayon")]
+impl<'a> GBufferChunkMut<'a> {
+    fn rows(&self) -> usize {
+        if self.width == 0 {
+            0
+        } else {
+            self.depth.len() / self.width
+        }
+    }
+
+    fn try_write(
+        &mut self,
+        x: usize,
+        y: usize,
+        depth: f32,
+        normal: Vec3,
+        kd: Vec3,
+        ks: Vec3,
+        ns: f32,
+        ke: Vec3,
+    ) -> bool {
+        if x >= self.width {
+            return false;
+        }
+        let rows = self.rows();
+        if y < self.y0 || y >= self.y0 + rows {
+            return false;
+        }
+        let i = (y - self.y0) * self.width + x;
+        if depth < self.depth[i] {
+            self.depth[i] = depth;
+            self.nx[i] = normal.x;
+            self.ny[i] = normal.y;
+            self.nz[i] = normal.z;
+            self.kd[i] = kd;
+            self.ks[i] = ks;
+            self.ns[i] = ns;
+            self.ke[i] = ke;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+#[cfg(feature = "rayon")]
+fn draw_tri_params_clamped_chunk(
+    cfg: RasterConfig,
+    gbuf: &mut GBufferChunkMut<'_>,
+    v0: Vertex,
+    v1: Vertex,
+    v2: Vertex,
+    kd_base: Vec3,
+    ks: Vec3,
+    ns: f32,
+    ke: Vec3,
+    tex: Option<&Texture>,
+    clamp_min_x: i32,
+    clamp_max_x: i32,
+    clamp_min_y: i32,
+    clamp_max_y: i32,
+) {
+    let s0 = project_to_screen(v0.pos, cfg.width, cfg.height);
+    let s1 = project_to_screen(v1.pos, cfg.width, cfg.height);
+    let s2 = project_to_screen(v2.pos, cfg.width, cfg.height);
+
+    let mut min_x = s0.x.min(s1.x).min(s2.x).floor().max(0.0) as i32;
+    let mut max_x = s0
+        .x
+        .max(s1.x)
+        .max(s2.x)
+        .ceil()
+        .min((cfg.width as i32 - 1) as f32) as i32;
+    let mut min_y = s0.y.min(s1.y).min(s2.y).floor().max(0.0) as i32;
+    let mut max_y = s0
+        .y
+        .max(s1.y)
+        .max(s2.y)
+        .ceil()
+        .min((cfg.height as i32 - 1) as f32) as i32;
+
+    min_x = min_x.max(clamp_min_x);
+    max_x = max_x.min(clamp_max_x);
+    min_y = min_y.max(clamp_min_y);
+    max_y = max_y.min(clamp_max_y);
+
+    if min_x > max_x || min_y > max_y {
+        return;
+    }
+
+    let area = edge(s0, s1, s2);
+    if area.abs() < 1e-8 {
+        return;
+    }
+
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let sample = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+            let w0 = edge(s1, s2, sample) / area;
+            let w1 = edge(s2, s0, sample) / area;
+            let w2 = edge(s0, s1, sample) / area;
+
+            if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
+                continue;
+            }
+
+            let depth = w0 * v0.pos.z + w1 * v1.pos.z + w2 * v2.pos.z;
+            let normal = (w0 * v0.nrm + w1 * v1.nrm + w2 * v2.nrm).normalize_or_zero();
+
+            let uv = w0 * v0.uv + w1 * v1.uv + w2 * v2.uv;
+            let mut kd = kd_base;
+            if let Some(t) = tex {
+                kd = kd * t.sample_nearest(uv);
+            }
+
+            let _ = gbuf.try_write(
+                x as usize,
+                y as usize,
+                depth,
+                normal,
+                kd,
+                ks,
+                ns,
+                ke,
+            );
+        }
+    }
+}
+
+#[cfg(feature = "rayon")]
+fn render_tiles_parallel(
+    scene: &Scene,
+    cfg: RasterConfig,
+    gbuf: GBufferSlicesMut<'_>,
+    tiled_tris: &[TiledTri],
+    tile_starts: &[u32],
+    tile_items: &[u32],
+    tiles_x: i32,
+    tiles_y: i32,
+) {
+    let width = cfg.width as usize;
+    let height = cfg.height as usize;
+    let chunk_rows = TILE_SIZE as usize;
+    let row_stride = width * chunk_rows;
+
+    let iter = gbuf
+        .depth
+        .par_chunks_mut(row_stride)
+        .zip(gbuf.nx.par_chunks_mut(row_stride))
+        .zip(gbuf.ny.par_chunks_mut(row_stride))
+        .zip(gbuf.nz.par_chunks_mut(row_stride))
+        .zip(gbuf.kd.par_chunks_mut(row_stride))
+        .zip(gbuf.ks.par_chunks_mut(row_stride))
+        .zip(gbuf.ns.par_chunks_mut(row_stride))
+        .zip(gbuf.ke.par_chunks_mut(row_stride));
+
+    iter.enumerate().for_each(
+        |(
+            ty,
+            (((((((depth_c, nx_c), ny_c), nz_c), kd_c), ks_c), ns_c), ke_c),
+        )| {
+            let y0 = ty * chunk_rows;
+            if y0 >= height {
+                return;
+            }
+            let y1 = (y0 + chunk_rows).min(height);
+            let mut chunk = GBufferChunkMut {
+                width,
+                y0,
+                depth: depth_c,
+                nx: nx_c,
+                ny: ny_c,
+                nz: nz_c,
+                kd: kd_c,
+                ks: ks_c,
+                ns: ns_c,
+                ke: ke_c,
+            };
+
+            let ty_i32 = ty as i32;
+            if ty_i32 >= tiles_y {
+                return;
+            }
+
+            for tx in 0..tiles_x {
+                let tile_id = ty_i32 * tiles_x + tx;
+                if tile_id < 0 {
+                    continue;
+                }
+                let tile_id = tile_id as usize;
+                if tile_id + 1 >= tile_starts.len() {
+                    continue;
+                }
+
+                let tile_min_x = tx * TILE_SIZE;
+                let tile_max_x = ((tx + 1) * TILE_SIZE - 1).min(cfg.width as i32 - 1);
+                let tile_min_y = (ty_i32 * TILE_SIZE).max(y0 as i32);
+                let tile_max_y = (((ty_i32 + 1) * TILE_SIZE - 1).min(cfg.height as i32 - 1))
+                    .min(y1 as i32 - 1);
+                if tile_min_y > tile_max_y {
+                    continue;
+                }
+
+                let start = tile_starts[tile_id] as usize;
+                let end = tile_starts[tile_id + 1] as usize;
+                for i in start..end {
+                    let tri = tiled_tris[tile_items[i] as usize];
+                    let tex = tri.map_kd.and_then(|h| scene.texture(h));
+                    draw_tri_params_clamped_chunk(
+                        cfg,
+                        &mut chunk,
+                        tri.a,
+                        tri.b,
+                        tri.c,
+                        tri.kd,
+                        tri.ks,
+                        tri.ns,
+                        tri.ke,
+                        tex,
+                        tile_min_x,
+                        tile_max_x,
+                        tile_min_y,
+                        tile_max_y,
+                    );
+                }
+            }
+        },
+    );
 }
 
 fn rasterize_tri_collect(
@@ -551,44 +802,63 @@ fn rasterize_tiled(scene: &Scene, cam: &Camera, surf: &mut RasterSurface, scratc
         }
     }
 
-    for ty in 0..tiles_y {
-        for tx in 0..tiles_x {
-            let id = (ty * tiles_x + tx) as usize;
-            let start = scratch.tile_starts[id] as usize;
-            let end = scratch.tile_starts[id + 1] as usize;
 
-            if start >= end || end > scratch.tile_items.len() {
-                continue;
-            }
+    #[cfg(feature = "rayon")]
+    {
+        let gbuf = surf.gbuf.slices_mut();
+        render_tiles_parallel(
+            scene,
+            surf.cfg,
+            gbuf,
+            &scratch.tiled_tris,
+            &scratch.tile_starts,
+            &scratch.tile_items,
+            tiles_x,
+            tiles_y,
+        );
+    }
 
-            let clamp_min_x = tx * TILE_SIZE;
-            let clamp_min_y = ty * TILE_SIZE;
-            let clamp_max_x = ((tx + 1) * TILE_SIZE - 1).min(width - 1);
-            let clamp_max_y = ((ty + 1) * TILE_SIZE - 1).min(height - 1);
+    #[cfg(not(feature = "rayon"))]
+    {
+        for ty in 0..tiles_y {
+            for tx in 0..tiles_x {
+                let id = (ty * tiles_x + tx) as usize;
+                let start = scratch.tile_starts[id] as usize;
+                let end = scratch.tile_starts[id + 1] as usize;
 
-            for k in start..end {
-                let tri_id = scratch.tile_items[k] as usize;
-                if tri_id >= scratch.tiled_tris.len() {
+                if start >= end || end > scratch.tile_items.len() {
                     continue;
                 }
-                let t = scratch.tiled_tris[tri_id];
-                let tex = t.map_kd.and_then(|h| scene.texture(h));
 
-                draw_tri_params_clamped(
-                    surf,
-                    t.a,
-                    t.b,
-                    t.c,
-                    t.kd,
-                    t.ks,
-                    t.ns,
-                    t.ke,
-                    tex,
-                    clamp_min_x,
-                    clamp_max_x,
-                    clamp_min_y,
-                    clamp_max_y,
-                );
+                let clamp_min_x = tx * TILE_SIZE;
+                let clamp_min_y = ty * TILE_SIZE;
+                let clamp_max_x = ((tx + 1) * TILE_SIZE - 1).min(width - 1);
+                let clamp_max_y = ((ty + 1) * TILE_SIZE - 1).min(height - 1);
+
+                for k in start..end {
+                    let tri_id = scratch.tile_items[k] as usize;
+                    if tri_id >= scratch.tiled_tris.len() {
+                        continue;
+                    }
+                    let t = scratch.tiled_tris[tri_id];
+                    let tex = t.map_kd.and_then(|h| scene.texture(h));
+
+                    draw_tri_params_clamped(
+                        surf,
+                        t.a,
+                        t.b,
+                        t.c,
+                        t.kd,
+                        t.ks,
+                        t.ns,
+                        t.ke,
+                        tex,
+                        clamp_min_x,
+                        clamp_max_x,
+                        clamp_min_y,
+                        clamp_max_y,
+                    );
+                }
             }
         }
     }
