@@ -33,6 +33,7 @@ pub mod gbuffer;
 pub mod io;
 pub mod light;
 pub mod material;
+pub mod texture;
 pub mod mesh;
 pub mod prelude;
 pub mod raster;
@@ -53,6 +54,7 @@ pub use crate::{
     light::Light,
     material::Material,
     mesh::Mesh,
+    texture::{Texture, TextureHandle},
     renderer::{Renderer, RendererConfig},
     scene::Scene,
     shader::{BuiltinShader, LambertShader, ShadeSample, Shader, ShaderId, UnlitShader},

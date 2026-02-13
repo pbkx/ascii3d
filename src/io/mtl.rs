@@ -66,7 +66,7 @@ pub fn parse_mtl(src: &str) -> Result<MtlLibrary, MtlError> {
             }
             let idx = materials.len();
             names.push(n.clone());
-            materials.push(*mat);
+            materials.push(mat.clone());
             index.insert(n, idx);
         }
         Ok(())
@@ -74,6 +74,7 @@ pub fn parse_mtl(src: &str) -> Result<MtlLibrary, MtlError> {
 
     for line in src.lines() {
         let line = line.trim();
+        let line = line.trim_start_matches("\\t").trim_start_matches("	").trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
@@ -118,6 +119,12 @@ pub fn parse_mtl(src: &str) -> Result<MtlLibrary, MtlError> {
                     cur_material.alpha = 1.0 - parse_f32(v)?;
                 }
             }
+            "map_Kd" => {
+                let rest: Vec<&str> = it.collect();
+                if !rest.is_empty() {
+                    cur_material.map_kd_path = Some(rest.join(" "));
+                }
+            }
             _ => {}
         }
     }
@@ -139,34 +146,36 @@ mod tests {
     fn parse_mtl_extracts_basic_fields() {
         let src = r"
 newmtl Red
-	Ka 0.01 0.02 0.03
+\tKa 0.01 0.02 0.03
 Kd 1 0 0
-	Ks 0.4 0.5 0.6
-	Ns 96
-	Ke 0.1 0.2 0.3
+\tKs 0.4 0.5 0.6
+\tNs 96
+\tKe 0.1 0.2 0.3
 d 0.5
+map_Kd albedo.png
 
 newmtl Blue
-	Ka 0 0 0
+\tKa 0 0 0
 Kd 0 0 1
-	Ks 0 0 0
-	Ns 4
+\tKs 0 0 0
+\tNs 4
 Tr 0.25
 ";
         let lib = parse_mtl(src).unwrap();
         assert_eq!(lib.names.len(), 2);
         assert_eq!(lib.materials.len(), 2);
 
-        let red = lib.materials[lib.index_of("Red").unwrap()];
-	    assert_eq!(red.ka, Vec3::new(0.01, 0.02, 0.03));
-	    assert_eq!(red.kd, Vec3::new(1.0, 0.0, 0.0));
-	    assert_eq!(red.ks, Vec3::new(0.4, 0.5, 0.6));
-	    assert!((red.ns - 96.0).abs() < 1e-6);
-	    assert_eq!(red.ke, Vec3::new(0.1, 0.2, 0.3));
+        let red = &lib.materials[lib.index_of("Red").unwrap()];
+        assert_eq!(red.ka, Vec3::new(0.01, 0.02, 0.03));
+        assert_eq!(red.kd, Vec3::new(1.0, 0.0, 0.0));
+        assert_eq!(red.ks, Vec3::new(0.4, 0.5, 0.6));
+        assert!((red.ns - 96.0).abs() < 1e-6);
+        assert_eq!(red.ke, Vec3::new(0.1, 0.2, 0.3));
         assert!((red.alpha - 0.5).abs() < 1e-6);
+        assert_eq!(red.map_kd_path.as_deref(), Some("albedo.png"));
 
-        let blue = lib.materials[lib.index_of("Blue").unwrap()];
-	    assert_eq!(blue.kd, Vec3::new(0.0, 0.0, 1.0));
+        let blue = &lib.materials[lib.index_of("Blue").unwrap()];
+        assert_eq!(blue.kd, Vec3::new(0.0, 0.0, 1.0));
         assert!((blue.alpha - 0.75).abs() < 1e-6);
     }
 }

@@ -1,10 +1,12 @@
 use crate::{Camera, Light, Material, Mesh, Transform};
+use crate::texture::{Texture, TextureHandle};
 
 #[derive(Clone, Debug)]
 pub struct Scene {
     pub camera: Camera,
     pub lights: Vec<Light>,
     objects: Vec<SceneObject>,
+    textures: Vec<Texture>,
 }
 
 #[derive(Clone, Debug)]
@@ -20,6 +22,7 @@ impl Scene {
             camera: Camera::default(),
             lights: Vec::new(),
             objects: Vec::new(),
+            textures: Vec::new(),
         }
     }
 
@@ -28,11 +31,22 @@ impl Scene {
             camera,
             lights: Vec::new(),
             objects: Vec::new(),
+            textures: Vec::new(),
         }
     }
 
     pub fn add_light(&mut self, light: Light) {
         self.lights.push(light);
+    }
+
+    pub fn add_texture(&mut self, texture: Texture) -> TextureHandle {
+        let handle = TextureHandle(self.textures.len());
+        self.textures.push(texture);
+        handle
+    }
+
+    pub fn texture(&self, handle: TextureHandle) -> Option<&Texture> {
+        self.textures.get(handle.0)
     }
 
     pub fn add_object(&mut self, mesh: Mesh, transform: Transform, material: Material) -> usize {

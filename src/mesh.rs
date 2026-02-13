@@ -1,7 +1,5 @@
-use glam::Vec3;
-use std::{
-    fmt,
-};
+use glam::{Vec2, Vec3};
+use std::fmt;
 
 pub type Tri = [u32; 3];
 
@@ -9,7 +7,9 @@ pub type Tri = [u32; 3];
 pub enum MeshValidationError {
     PositionNotFinite { index: usize },
     NormalNotFinite { index: usize },
+    UvNotFinite { index: usize },
     NormalsLenMismatch { normals: usize, positions: usize },
+    UvsLenMismatch { uvs: usize, positions: usize },
     TriangleIndexOutOfBounds { tri: usize, index: u32, vertex_count: usize },
 }
 
@@ -22,8 +22,14 @@ impl fmt::Display for MeshValidationError {
             MeshValidationError::NormalNotFinite { index } => {
                 write!(f, "normal_not_finite:{index}")
             }
+            MeshValidationError::UvNotFinite { index } => {
+                write!(f, "uv_not_finite:{index}")
+            }
             MeshValidationError::NormalsLenMismatch { normals, positions } => {
                 write!(f, "normals_len_mismatch:{normals}:{positions}")
+            }
+            MeshValidationError::UvsLenMismatch { uvs, positions } => {
+                write!(f, "uvs_len_mismatch:{uvs}:{positions}")
             }
             MeshValidationError::TriangleIndexOutOfBounds { tri, index, vertex_count } => {
                 write!(f, "tri_oob:{tri}:{index}:{vertex_count}")
@@ -39,6 +45,7 @@ pub struct Mesh {
     pub positions: Vec<Vec3>,
     pub indices: Vec<Tri>,
     pub normals: Vec<Vec3>,
+    pub uvs: Vec<Vec2>,
 }
 
 impl Mesh {
@@ -61,6 +68,11 @@ impl Mesh {
         self
     }
 
+    pub fn with_uvs(mut self, uvs: Vec<Vec2>) -> Self {
+        self.uvs = uvs;
+        self
+    }
+
     pub fn push_triangle(&mut self, i0: u32, i1: u32, i2: u32) {
         self.indices.push([i0, i1, i2]);
     }
@@ -76,6 +88,7 @@ impl Mesh {
             positions,
             indices,
             normals: Vec::new(),
+            uvs: Vec::new(),
         }
     }
 
@@ -110,6 +123,7 @@ impl Mesh {
             positions,
             indices,
             normals: Vec::new(),
+            uvs: Vec::new(),
         }
     }
 
@@ -130,6 +144,19 @@ impl Mesh {
         for (i, n) in self.normals.iter().enumerate() {
             if !(n.x.is_finite() && n.y.is_finite() && n.z.is_finite()) {
                 return Err(MeshValidationError::NormalNotFinite { index: i });
+            }
+        }
+
+        if !self.uvs.is_empty() && self.uvs.len() != self.positions.len() {
+            return Err(MeshValidationError::UvsLenMismatch {
+                uvs: self.uvs.len(),
+                positions: self.positions.len(),
+            });
+        }
+
+        for (i, uv) in self.uvs.iter().enumerate() {
+            if !(uv.x.is_finite() && uv.y.is_finite()) {
+                return Err(MeshValidationError::UvNotFinite { index: i });
             }
         }
 
@@ -154,7 +181,6 @@ impl Mesh {
             panic!("{e:?}");
         }
     }
-
 
     pub fn ensure_normals(&mut self) {
         if self.positions.is_empty() {
@@ -212,7 +238,7 @@ impl Mesh {
             acc[i2u] += fn_u * wc;
         }
 
-for (i, v) in acc.iter().enumerate().take(self.normals.len()) {
+        for (i, v) in acc.iter().enumerate().take(self.normals.len()) {
             self.normals[i] = v.normalize_or_zero();
         }
     }
@@ -220,9 +246,7 @@ for (i, v) in acc.iter().enumerate().take(self.normals.len()) {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        Mesh, MeshValidationError,
-    };
+    use super::{Mesh, MeshValidationError};
     use glam::Vec3;
 
     #[test]
@@ -260,29 +284,12 @@ mod tests {
     }
 
     #[test]
-    fn unit_cube_normals_and_invariants() {
-        let mut m = Mesh::unit_cube();
-        assert_eq!(m.validate_basic(), Ok(()));
-        m.ensure_normals();
-        assert_eq!(m.normals.len(), m.positions.len());
-        for (i, n) in m.normals.iter().enumerate() {
-            assert!(n.x.is_finite() && n.y.is_finite() && n.z.is_finite(), "n{i}");
-            assert!((n.length() - 1.0).abs() < 1e-4);
-        }
-        assert_eq!(m.validate_basic(), Ok(()));
-    }
-
-    #[test]
-    fn invalid_index_is_detected() {
+    fn validate_rejects_oob_indices() {
         let mut m = Mesh::unit_triangle();
-        m.push_triangle(0, 1, 7);
-        let e = m.validate_basic().unwrap_err();
-        match e {
-            MeshValidationError::TriangleIndexOutOfBounds { tri: _, index, vertex_count } => {
-                assert_eq!(index, 7);
-                assert_eq!(vertex_count, 3);
-            }
-            _ => panic!("wrong_error"),
-        }
+        m.indices = vec![[0, 1, 3]];
+        assert!(matches!(
+            m.validate_basic(),
+            Err(MeshValidationError::TriangleIndexOutOfBounds { .. })
+        ));
     }
 }

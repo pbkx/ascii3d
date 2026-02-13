@@ -366,8 +366,10 @@ impl Renderer {
 
 #[cfg(test)]
 mod tests {
-    use crate::{AsciiRamp, DebugView, DitherMode, GlyphMode, Material, Mesh, Renderer, RendererConfig, Scene, ShaderId, TemporalConfig, Transform};
-    use glam::Vec3;
+    use crate::{AsciiRamp, DebugView, DitherMode, GlyphMode, Material, Mesh, Renderer, RendererConfig, Scene, ShaderId, TemporalConfig, Transform, Texture};
+    use crate::camera::Projection;
+    use crate::Camera;
+    use glam::{Vec2, Vec3};
 
     #[test]
     fn smoke_triangle_renders_deterministically() {
@@ -569,6 +571,60 @@ mod tests {
         assert_eq!(hashes.len(), views.len());
     }
 
+    #[test]
+    fn procedural_textured_quad_image_hash_snapshot() {
+        let w = 32;
+        let h = 32;
+
+        let mut scene = Scene::new();
+        scene.camera = Camera::new(
+            Transform::IDENTITY,
+            Projection::Orthographic {
+                half_height: 1.0,
+                near: -10.0,
+                far: 10.0,
+            },
+        );
+
+        let tex = Texture::checkerboard_rgba8(8, 8, 1);
+        let handle = scene.add_texture(tex);
+
+        let mut mat = Material::default();
+        mat.kd = Vec3::ONE;
+        mat.map_kd = Some(handle);
+
+        let mut mesh = Mesh::new();
+        mesh.positions = vec![
+            Vec3::new(-1.0, 1.0, 0.0),
+            Vec3::new(33.0 / 31.0, 1.0, 0.0),
+            Vec3::new(33.0 / 31.0, -(33.0 / 31.0), 0.0),
+            Vec3::new(-1.0, -(33.0 / 31.0), 0.0),
+        ];
+        mesh.uvs = vec![
+            Vec2::new(0.0, 0.0),
+            Vec2::new(1.0, 0.0),
+            Vec2::new(1.0, 1.0),
+            Vec2::new(0.0, 1.0),
+        ];
+        mesh.indices = vec![[0, 1, 2], [0, 2, 3]];
+        mesh.ensure_normals();
+        mesh.assert_invariants();
+
+        scene.add_object(mesh, Transform::IDENTITY, mat);
+
+        let renderer = Renderer::new(
+            RendererConfig::default()
+                .with_size(w, h)
+                .with_debug_view(DebugView::Albedo),
+        );
+
+        let mut img = crate::targets::ImageTarget::new(w, h);
+        renderer.render_image(&scene, &mut img);
+
+        const EXPECTED: u64 = 0xa325_50a8_c82a_5025;
+        assert_eq!(img.hash64(), EXPECTED);
+    }
+
     fn glyph_churn(a: &crate::targets::BufferTarget, b: &crate::targets::BufferTarget) -> f32 {
         assert_eq!(a.width(), b.width());
         assert_eq!(a.height(), b.height());
@@ -665,4 +721,5 @@ mod tests {
             assert!(churn_temporal <= churn_no * 0.9);
         }
     }
-}
+
+    }

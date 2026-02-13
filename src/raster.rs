@@ -1,11 +1,12 @@
 use glam::{Mat4, Vec2, Vec3, Vec4};
 
-use crate::{Camera, GBuffer, Material, Scene};
+use crate::{Camera, GBuffer, Material, Scene, Texture};
 
 #[derive(Copy, Clone, Debug)]
 struct Vertex {
     pos: Vec3,
     nrm: Vec3,
+    uv: Vec2,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -43,7 +44,14 @@ fn edge(a: Vec2, b: Vec2, c: Vec2) -> f32 {
     (c.x - a.x) * (b.y - a.y) - (c.y - a.y) * (b.x - a.x)
 }
 
-fn draw_tri(surf: &mut RasterSurface, v0: Vertex, v1: Vertex, v2: Vertex, material: &Material) {
+fn draw_tri(
+    surf: &mut RasterSurface,
+    v0: Vertex,
+    v1: Vertex,
+    v2: Vertex,
+    material: &Material,
+    tex: Option<&Texture>,
+) {
     let s0 = project_to_screen(v0.pos, surf.cfg.width, surf.cfg.height);
     let s1 = project_to_screen(v1.pos, surf.cfg.width, surf.cfg.height);
     let s2 = project_to_screen(v2.pos, surf.cfg.width, surf.cfg.height);
@@ -81,12 +89,19 @@ fn draw_tri(surf: &mut RasterSurface, v0: Vertex, v1: Vertex, v2: Vertex, materi
 
             let depth = w0 * v0.pos.z + w1 * v1.pos.z + w2 * v2.pos.z;
             let normal = (w0 * v0.nrm + w1 * v1.nrm + w2 * v2.nrm).normalize_or_zero();
+
+            let uv = w0 * v0.uv + w1 * v1.uv + w2 * v2.uv;
+            let mut kd = material.kd;
+            if let Some(t) = tex {
+                kd = kd * t.sample_nearest(uv);
+            }
+
             let _ = surf.gbuf.try_write(
                 x as usize,
                 y as usize,
                 depth,
                 normal,
-                material.kd,
+                kd,
                 material.ks,
                 material.ns,
                 material.ke,
@@ -103,18 +118,22 @@ fn rasterize_tri(
     mvp: Mat4,
     nm: Mat4,
     material: &Material,
+    tex: Option<&Texture>,
 ) {
     let mut v0 = Vertex {
         pos: (mv * tri.a.pos.extend(1.0)).truncate(),
         nrm: (nm * tri.a.nrm.extend(0.0)).truncate(),
+        uv: tri.a.uv,
     };
     let mut v1 = Vertex {
         pos: (mv * tri.b.pos.extend(1.0)).truncate(),
         nrm: (nm * tri.b.nrm.extend(0.0)).truncate(),
+        uv: tri.b.uv,
     };
     let mut v2 = Vertex {
         pos: (mv * tri.c.pos.extend(1.0)).truncate(),
         nrm: (nm * tri.c.nrm.extend(0.0)).truncate(),
+        uv: tri.c.uv,
     };
 
     v0.nrm = v0.nrm.normalize_or_zero();
@@ -135,11 +154,13 @@ fn rasterize_tri(
         let t_param = (z_plane - pos_a.z) / (pos_b.z - pos_a.z);
         let pos = vert_a.pos + t_param * (vert_b.pos - vert_a.pos);
         let nrm = (vert_a.nrm + t_param * (vert_b.nrm - vert_a.nrm)).normalize_or_zero();
+        let uv = vert_a.uv + t_param * (vert_b.uv - vert_a.uv);
         let pos_clip = pos_a + t_param * (pos_b - pos_a);
         (
             Vertex {
                 pos,
                 nrm,
+                uv,
             },
             pos_clip,
         )
@@ -187,7 +208,7 @@ fn rasterize_tri(
         bb.pos = pb.truncate();
         cc.pos = pc.truncate();
 
-        draw_tri(surf, aa, bb, cc, material);
+        draw_tri(surf, aa, bb, cc, material, tex);
     }
 }
 
@@ -197,6 +218,8 @@ fn rasterize(scene: &Scene, cam: &Camera, surf: &mut RasterSurface) {
         let aspect = surf.cfg.width as f32 / surf.cfg.height as f32;
         let mvp = cam.projection_matrix(aspect) * mv;
         let nm = mv.inverse().transpose();
+
+        let tex = material.map_kd.and_then(|h| scene.texture(h));
 
         for idx in mesh.indices.iter() {
             let i0 = idx[0] as usize;
@@ -211,22 +234,29 @@ fn rasterize(scene: &Scene, cam: &Camera, surf: &mut RasterSurface) {
             let n1 = mesh.normals.get(i1).copied().unwrap_or(Vec3::Z);
             let n2 = mesh.normals.get(i2).copied().unwrap_or(Vec3::Z);
 
+            let uv0 = mesh.uvs.get(i0).copied().unwrap_or(Vec2::ZERO);
+            let uv1 = mesh.uvs.get(i1).copied().unwrap_or(Vec2::ZERO);
+            let uv2 = mesh.uvs.get(i2).copied().unwrap_or(Vec2::ZERO);
+
             let tri = Tri {
                 a: Vertex {
                     pos: mesh.positions[i0],
                     nrm: n0,
+                    uv: uv0,
                 },
                 b: Vertex {
                     pos: mesh.positions[i1],
                     nrm: n1,
+                    uv: uv1,
                 },
                 c: Vertex {
                     pos: mesh.positions[i2],
                     nrm: n2,
+                    uv: uv2,
                 },
             };
 
-            rasterize_tri(surf, cam, &tri, mv, mvp, nm, material);
+            rasterize_tri(surf, cam, &tri, mv, mvp, nm, material, tex);
         }
     }
 }

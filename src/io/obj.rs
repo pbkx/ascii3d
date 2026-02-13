@@ -1,5 +1,5 @@
 use crate::{io::mtl::parse_mtl, Material, Mesh};
-use glam::Vec3;
+use glam::{Vec2, Vec3};
 use std::{
     collections::HashMap,
     error::Error,
@@ -70,6 +70,7 @@ fn resolve_index(idx: i32, len: usize) -> Result<usize, ObjError> {
 #[derive(Clone, Copy, Debug)]
 struct FaceIndex {
     v: i32,
+    vt: i32,
     vn: i32,
 }
 
@@ -77,29 +78,23 @@ fn parse_face_index(tok: &str) -> Result<FaceIndex, ObjError> {
     let mut parts = tok.split('/');
     let v = parts.next().ok_or(ObjError::MissingFaceVertex)?;
     let v = parse_i32(v)?;
+
+    let mut vt: i32 = 0;
     let mut vn: i32 = 0;
 
-    let a = parts.next();
-    let b = parts.next();
-
-    match (a, b) {
-        (Some(""), Some(vn_s)) => {
-            vn = parse_i32(vn_s)?;
+    if let Some(vt_s) = parts.next() {
+        if !vt_s.is_empty() {
+            vt = parse_i32(vt_s)?;
         }
-        (Some(vt_s), None) => {
-            if !vt_s.is_empty() {
-                let _ = vt_s;
-            }
-        }
-        (Some(_vt_s), Some(vn_s)) => {
-            if !vn_s.is_empty() {
-                vn = parse_i32(vn_s)?;
-            }
-        }
-        _ => {}
     }
 
-    Ok(FaceIndex { v, vn })
+    if let Some(vn_s) = parts.next() {
+        if !vn_s.is_empty() {
+            vn = parse_i32(vn_s)?;
+        }
+    }
+
+    Ok(FaceIndex { v, vt, vn })
 }
 
 #[derive(Clone, Debug)]
@@ -112,6 +107,7 @@ struct ParsedFace {
 struct ParsedObj {
     positions: Vec<Vec3>,
     normals: Vec<Vec3>,
+    texcoords: Vec<Vec2>,
     faces: Vec<ParsedFace>,
     mtllib: Option<String>,
 }
@@ -119,6 +115,7 @@ struct ParsedObj {
 fn parse_obj(src: &str, mat_map: &HashMap<String, u32>) -> Result<ParsedObj, ObjError> {
     let mut positions: Vec<Vec3> = Vec::new();
     let mut normals: Vec<Vec3> = Vec::new();
+    let mut texcoords: Vec<Vec2> = Vec::new();
     let mut faces: Vec<ParsedFace> = Vec::new();
     let mut mtllib: Option<String> = None;
 
@@ -146,9 +143,13 @@ fn parse_obj(src: &str, mat_map: &HashMap<String, u32>) -> Result<ParsedObj, Obj
                 let z = it.next().ok_or(ObjError::ParseFloat)?;
                 normals.push(Vec3::new(parse_f32(x)?, parse_f32(y)?, parse_f32(z)?));
             }
+            "vt" => {
+                let u = it.next().ok_or(ObjError::ParseFloat)?;
+                let v = it.next().ok_or(ObjError::ParseFloat)?;
+                texcoords.push(Vec2::new(parse_f32(u)?, parse_f32(v)?));
+            }
             "f" => {
-                let corners: Result<Vec<FaceIndex>, ObjError> =
-                    it.map(parse_face_index).collect();
+                let corners: Result<Vec<FaceIndex>, ObjError> = it.map(parse_face_index).collect();
                 let corners = corners?;
                 if corners.len() < 3 {
                     continue;
@@ -175,13 +176,17 @@ fn parse_obj(src: &str, mat_map: &HashMap<String, u32>) -> Result<ParsedObj, Obj
     Ok(ParsedObj {
         positions,
         normals,
+        texcoords,
         faces,
         mtllib,
     })
 }
 
-fn build_mesh(parsed: ParsedObj, mut materials: Vec<Material>, mut names: Vec<String>) -> Result<LoadedObj, ObjError> {
-
+fn build_mesh(
+    parsed: ParsedObj,
+    mut materials: Vec<Material>,
+    mut names: Vec<String>,
+) -> Result<LoadedObj, ObjError> {
     let mut all_corner_normals = !parsed.normals.is_empty();
     if all_corner_normals {
         for face in &parsed.faces {
@@ -198,24 +203,35 @@ fn build_mesh(parsed: ParsedObj, mut materials: Vec<Material>, mut names: Vec<St
     }
 
     let use_obj_normals = all_corner_normals && !parsed.normals.is_empty();
+    let has_texcoords = !parsed.texcoords.is_empty();
 
     let mut mesh = Mesh::new();
     let mut tri_materials: Vec<u32> = Vec::new();
 
     if use_obj_normals {
-        let mut map: HashMap<(i32, i32), u32> = HashMap::new();
+        let mut map: HashMap<(i32, i32, i32), u32> = HashMap::new();
         for face in parsed.faces {
             let mut idxs: Vec<u32> = Vec::with_capacity(face.corners.len());
             for c in face.corners {
-                let key = (c.v, c.vn);
+                let key = (c.v, c.vt, c.vn);
                 let out = if let Some(&o) = map.get(&key) {
                     o
                 } else {
                     let pi = resolve_index(c.v, parsed.positions.len())?;
                     let ni = resolve_index(c.vn, parsed.normals.len())?;
+                    let uv = if has_texcoords && c.vt != 0 {
+                        let ti = resolve_index(c.vt, parsed.texcoords.len())?;
+                        parsed.texcoords[ti]
+                    } else {
+                        Vec2::ZERO
+                    };
+
                     let out = mesh.positions.len() as u32;
                     mesh.positions.push(parsed.positions[pi]);
                     mesh.normals.push(parsed.normals[ni]);
+                    if has_texcoords {
+                        mesh.uvs.push(uv);
+                    }
                     map.insert(key, out);
                     out
                 };
@@ -224,17 +240,28 @@ fn build_mesh(parsed: ParsedObj, mut materials: Vec<Material>, mut names: Vec<St
             triangulate(&idxs, face.mat, &mut mesh, &mut tri_materials);
         }
     } else {
-        let mut map: HashMap<i32, u32> = HashMap::new();
+        let mut map: HashMap<(i32, i32), u32> = HashMap::new();
         for face in parsed.faces {
             let mut idxs: Vec<u32> = Vec::with_capacity(face.corners.len());
             for c in face.corners {
-                let out = if let Some(&o) = map.get(&c.v) {
+                let key = (c.v, c.vt);
+                let out = if let Some(&o) = map.get(&key) {
                     o
                 } else {
                     let pi = resolve_index(c.v, parsed.positions.len())?;
+                    let uv = if has_texcoords && c.vt != 0 {
+                        let ti = resolve_index(c.vt, parsed.texcoords.len())?;
+                        parsed.texcoords[ti]
+                    } else {
+                        Vec2::ZERO
+                    };
+
                     let out = mesh.positions.len() as u32;
                     mesh.positions.push(parsed.positions[pi]);
-                    map.insert(c.v, out);
+                    if has_texcoords {
+                        mesh.uvs.push(uv);
+                    }
+                    map.insert(key, out);
                     out
                 };
                 idxs.push(out);
@@ -308,13 +335,15 @@ fn resolve_mtl_path(obj_path: &Path, mtl_name: &str) -> PathBuf {
     base.join(mtl_name)
 }
 
-
 pub fn load_obj_with_mtl_mesh_materials(path: impl AsRef<Path>) -> Result<(Mesh, Vec<Material>), ObjError> {
     let loaded = load_obj_with_mtl(path)?;
     Ok((loaded.mesh, loaded.materials))
 }
 
-pub fn load_obj_with_mtl_str_mesh_materials(obj_src: &str, mtl_src: Option<&str>) -> Result<(Mesh, Vec<Material>), ObjError> {
+pub fn load_obj_with_mtl_str_mesh_materials(
+    obj_src: &str,
+    mtl_src: Option<&str>,
+) -> Result<(Mesh, Vec<Material>), ObjError> {
     let loaded = load_obj_with_mtl_str(obj_src, mtl_src)?;
     Ok((loaded.mesh, loaded.materials))
 }
@@ -390,6 +419,23 @@ f -3 -2 -1
 ";
         let loaded = load_obj_with_mtl_str(obj, None).unwrap();
         assert_eq!(loaded.mesh.indices.len(), 1);
+        loaded.mesh.assert_invariants();
+    }
+
+    #[test]
+    fn obj_uvs_parse_and_align() {
+        let obj = r"
+v 0 0 0
+v 1 0 0
+v 0 1 0
+vt 0 0
+vt 1 0
+vt 0 1
+f 1/1 2/2 3/3
+";
+        let loaded = load_obj_with_mtl_str(obj, None).unwrap();
+        assert_eq!(loaded.mesh.positions.len(), 3);
+        assert_eq!(loaded.mesh.uvs.len(), 3);
         loaded.mesh.assert_invariants();
     }
 }
