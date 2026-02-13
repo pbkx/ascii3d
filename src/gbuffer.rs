@@ -168,6 +168,63 @@ impl GBuffer {
         &self.ke
     }
 
+    /// Deterministic hash of the full g-buffer contents.
+    ///
+    /// Intended for tests/benchmarks/debugging.
+    pub fn hash64(&self) -> u64 {
+        // 64-bit FNV-1a.
+        let mut h: u64 = 0xcbf29ce484222325;
+
+        #[inline]
+        fn mix(mut h: u64, bytes: &[u8]) -> u64 {
+            for &b in bytes {
+                h ^= b as u64;
+                h = h.wrapping_mul(0x100000001b3);
+            }
+            h
+        }
+
+        #[inline]
+        fn mix_f32(h: u64, v: f32) -> u64 {
+            mix(h, &v.to_bits().to_le_bytes())
+        }
+
+        #[inline]
+        fn mix_vec3(mut h: u64, v: Vec3) -> u64 {
+            let a = v.to_array();
+            h = mix_f32(h, a[0]);
+            h = mix_f32(h, a[1]);
+            h = mix_f32(h, a[2]);
+            h
+        }
+
+        h = mix(h, &(self.width as u64).to_le_bytes());
+        h = mix(h, &(self.height as u64).to_le_bytes());
+
+        let n = self.width.saturating_mul(self.height);
+        debug_assert_eq!(self.depth.len(), n);
+        debug_assert_eq!(self.nx.len(), n);
+        debug_assert_eq!(self.ny.len(), n);
+        debug_assert_eq!(self.nz.len(), n);
+        debug_assert_eq!(self.kd.len(), n);
+        debug_assert_eq!(self.ks.len(), n);
+        debug_assert_eq!(self.ns.len(), n);
+        debug_assert_eq!(self.ke.len(), n);
+
+        for i in 0..n {
+            h = mix_f32(h, self.depth[i]);
+            h = mix_f32(h, self.nx[i]);
+            h = mix_f32(h, self.ny[i]);
+            h = mix_f32(h, self.nz[i]);
+            h = mix_vec3(h, self.kd[i]);
+            h = mix_vec3(h, self.ks[i]);
+            h = mix_f32(h, self.ns[i]);
+            h = mix_vec3(h, self.ke[i]);
+        }
+
+        h
+    }
+
     #[cfg(feature = "rayon")]
     pub(crate) fn slices_mut(&mut self) -> GBufferSlicesMut<'_> {
         GBufferSlicesMut {

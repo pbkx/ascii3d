@@ -34,3 +34,22 @@ png = []
 gltf = []
 rayon = ["dep:rayon"]
 image = ["dep:image"]
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "raster_immediate"
+harness = false
+
+[[bench]]
+name = "raster_tiled"
+harness = false
+
+[[bench]]
+name = "glyph_resolve"
+harness = false
+
+[[bench]]
+name = "render_end_to_end"
+harness = false

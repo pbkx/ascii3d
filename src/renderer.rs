@@ -3,6 +3,7 @@ use crate::{
     dither::{Dither, DitherMode},
     glyph::{AsciiRamp, GlyphMode},
     gbuffer::GBuffer,
+    profile::RenderStats,
     raster,
     scene::Scene,
     shader::{BuiltinShader, ShaderId},
@@ -13,6 +14,7 @@ use crate::{
 
 use glam::Vec3;
 use std::cell::RefCell;
+use std::time::Instant;
 
 #[derive(Clone, Debug)]
 pub struct RendererConfig {
@@ -162,6 +164,60 @@ impl Renderer {
             config,
             temporal: RefCell::new(TemporalState::new()),
         }
+    }
+
+    fn count_tris(scene: &Scene) -> u64 {
+        let mut t: u64 = 0;
+        for (mesh, _xf, _mat) in scene.iter_objects() {
+            t += (mesh.indices.len() / 3) as u64;
+        }
+        t
+    }
+
+    pub fn render_with_stats(&self, scene: &Scene, target: &mut BufferTarget) -> RenderStats {
+        let mut stats = RenderStats::default();
+        let total_t0 = Instant::now();
+
+        stats.triangles_submitted = Self::count_tris(scene);
+        stats.tile_binning = self.config.tile_binning;
+
+        let resize_t0 = Instant::now();
+        if target.width() != self.config.width() || target.height() != self.config.height() {
+            *target = BufferTarget::new(self.config.width(), self.config.height());
+        }
+        stats.target_resize = resize_t0.elapsed();
+
+        stats.width = target.width();
+        stats.height = target.height();
+
+        let clear_t0 = Instant::now();
+        target.clear(Cell::new(' ', Rgb8::BLACK, Rgb8::BLACK, f32::INFINITY));
+        stats.target_clear = clear_t0.elapsed();
+
+        let gbuf_t0 = Instant::now();
+        let mut gbuf = match self.config.glyph_mode() {
+            GlyphMode::HalfBlock => GBuffer::new(self.config.width(), self.config.height().saturating_mul(2)),
+            _ => GBuffer::new(self.config.width(), self.config.height()),
+        };
+        stats.gbuffer_alloc = gbuf_t0.elapsed();
+
+        let raster_t0 = Instant::now();
+        if self.config.tile_binning {
+            raster::render_to_gbuffer_tiled(scene, &mut gbuf);
+        } else {
+            raster::render_to_gbuffer(scene, &mut gbuf);
+        }
+        stats.raster = raster_t0.elapsed();
+
+        let map_t0 = Instant::now();
+        match self.config.glyph_mode() {
+            GlyphMode::HalfBlock => self.map_gbuffer_to_buffer_half_block(&gbuf, target),
+            _ => self.map_gbuffer_to_buffer(&gbuf, target),
+        }
+        stats.map = map_t0.elapsed();
+
+        stats.total = total_t0.elapsed();
+        stats
     }
 
     pub fn render(&self, scene: &Scene, target: &mut BufferTarget) {
@@ -357,6 +413,76 @@ impl Renderer {
             raster::render_to_gbuffer(scene, &mut gbuf);
         }
         self.map_gbuffer_to_image(&gbuf, target);
+    }
+
+    pub fn render_image_with_stats(&self, scene: &Scene, target: &mut ImageTarget) -> RenderStats {
+        let mut stats = RenderStats::default();
+        let t_total = Instant::now();
+
+        let t_resize = Instant::now();
+        if target.width() != self.config.width() || target.height() != self.config.height() {
+            *target = ImageTarget::new(self.config.width(), self.config.height());
+        }
+        stats.target_resize = t_resize.elapsed();
+
+        stats.width = target.width();
+        stats.height = target.height();
+        stats.tile_binning = self.config.tile_binning;
+        stats.triangles_submitted = Self::count_tris(scene);
+
+        let t_clear = Instant::now();
+        target.clear_rgba(0, 0, 0, 0);
+        stats.target_clear = t_clear.elapsed();
+
+        let t_gbuf = Instant::now();
+        let mut gbuf = GBuffer::new(self.config.width(), self.config.height());
+        stats.gbuffer_alloc = t_gbuf.elapsed();
+
+        let t_raster = Instant::now();
+        if self.config.tile_binning {
+            raster::render_to_gbuffer_tiled(scene, &mut gbuf);
+        } else {
+            raster::render_to_gbuffer(scene, &mut gbuf);
+        }
+        stats.raster = t_raster.elapsed();
+
+        let t_map = Instant::now();
+        self.map_gbuffer_to_image(&gbuf, target);
+        stats.map = t_map.elapsed();
+
+        stats.total = t_total.elapsed();
+        stats
+    }
+
+    pub fn resolve_gbuffer_to_buffer(&self, gbuf: &GBuffer, target: &mut BufferTarget) {
+        if target.width() != self.config.width()
+            || target.height() != self.config.height()
+            || (matches!(&self.config.glyph_mode, GlyphMode::HalfBlock) && gbuf.height() != target.height() * 2)
+            || (!matches!(&self.config.glyph_mode, GlyphMode::HalfBlock) && gbuf.height() != target.height())
+            || gbuf.width() != target.width()
+        {
+            // Caller is responsible for providing a correctly-sized target/gbuffer pair.
+            // We keep this as a debug-time contract to avoid surprising reallocation.
+            debug_assert!(false, "resolve_gbuffer_to_buffer: size mismatch");
+        }
+
+        target.clear(Cell::new(' ', Rgb8::BLACK, Rgb8::BLACK, f32::INFINITY));
+        if matches!(&self.config.glyph_mode, GlyphMode::HalfBlock) {
+            self.map_gbuffer_to_buffer_half_block(gbuf, target);
+        } else {
+            self.map_gbuffer_to_buffer(gbuf, target);
+        }
+    }
+
+    pub fn resolve_gbuffer_to_image(&self, gbuf: &GBuffer, target: &mut ImageTarget) {
+        if target.width() != self.config.width() || target.height() != self.config.height() {
+            debug_assert!(false, "resolve_gbuffer_to_image: target size mismatch");
+        }
+        debug_assert_eq!(gbuf.width(), target.width());
+        debug_assert_eq!(gbuf.height(), target.height());
+
+        target.clear_rgba(0, 0, 0, 0);
+        self.map_gbuffer_to_image(gbuf, target);
     }
 
     fn map_gbuffer_to_image(&self, gbuf: &GBuffer, target: &mut ImageTarget) {

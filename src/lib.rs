@@ -35,6 +35,7 @@ pub mod light;
 pub mod material;
 pub mod texture;
 pub mod mesh;
+pub mod profile;
 pub mod prelude;
 pub mod raster;
 pub mod renderer;
@@ -54,6 +55,7 @@ pub use crate::{
     light::Light,
     material::Material,
     mesh::Mesh,
+    profile::RenderStats,
     texture::{Texture, TextureHandle},
     renderer::{Renderer, RendererConfig},
     scene::Scene,
