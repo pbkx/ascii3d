@@ -1,6 +1,6 @@
 use glam::{Mat4, Vec2, Vec3, Vec4};
 
-use crate::{Camera, GBuffer, Material, Scene, Texture};
+use crate::{Camera, GBuffer, Material, Scene, Texture, TextureHandle};
 
 use std::cell::RefCell;
 
@@ -19,6 +19,21 @@ struct Tri {
     b: Vertex,
     c: Vertex,
 }
+
+const TILE_SIZE: i32 = 16;
+
+#[derive(Copy, Clone, Debug)]
+struct TiledTri {
+    a: Vertex,
+    b: Vertex,
+    c: Vertex,
+    kd: Vec3,
+    ks: Vec3,
+    ns: f32,
+    ke: Vec3,
+    map_kd: Option<TextureHandle>,
+}
+
 
 #[derive(Copy, Clone, Debug)]
 struct RasterConfig {
@@ -40,6 +55,11 @@ impl<'a> RasterSurface<'a> {
 pub(crate) struct Scratch {
     clip_a: Vec<ClipVert>,
     clip_b: Vec<ClipVert>,
+    tiled_tris: Vec<TiledTri>,
+    tile_counts: Vec<u32>,
+    tile_starts: Vec<u32>,
+    tile_cursor: Vec<u32>,
+    tile_items: Vec<u32>,
     grow_events: usize,
     last_grow_events: usize,
 }
@@ -49,6 +69,11 @@ impl Scratch {
         Self {
             clip_a: Vec::with_capacity(8),
             clip_b: Vec::with_capacity(8),
+            tiled_tris: Vec::new(),
+            tile_counts: Vec::new(),
+            tile_starts: Vec::new(),
+            tile_cursor: Vec::new(),
+            tile_items: Vec::new(),
             grow_events: 0,
             last_grow_events: 0,
         }
@@ -164,6 +189,407 @@ fn draw_tri(
                 material.ns,
                 material.ke,
             );
+        }
+    }
+}
+
+
+fn draw_tri_params_clamped(
+    surf: &mut RasterSurface,
+    v0: Vertex,
+    v1: Vertex,
+    v2: Vertex,
+    kd_base: Vec3,
+    ks: Vec3,
+    ns: f32,
+    ke: Vec3,
+    tex: Option<&Texture>,
+    clamp_min_x: i32,
+    clamp_max_x: i32,
+    clamp_min_y: i32,
+    clamp_max_y: i32,
+) {
+    let s0 = project_to_screen(v0.pos, surf.cfg.width, surf.cfg.height);
+    let s1 = project_to_screen(v1.pos, surf.cfg.width, surf.cfg.height);
+    let s2 = project_to_screen(v2.pos, surf.cfg.width, surf.cfg.height);
+
+    let mut min_x = s0.x.min(s1.x).min(s2.x).floor().max(0.0) as i32;
+    let mut max_x = s0
+        .x
+        .max(s1.x)
+        .max(s2.x)
+        .ceil()
+        .min((surf.cfg.width as i32 - 1) as f32) as i32;
+    let mut min_y = s0.y.min(s1.y).min(s2.y).floor().max(0.0) as i32;
+    let mut max_y = s0
+        .y
+        .max(s1.y)
+        .max(s2.y)
+        .ceil()
+        .min((surf.cfg.height as i32 - 1) as f32) as i32;
+
+    min_x = min_x.max(clamp_min_x);
+    max_x = max_x.min(clamp_max_x);
+    min_y = min_y.max(clamp_min_y);
+    max_y = max_y.min(clamp_max_y);
+
+    if min_x > max_x || min_y > max_y {
+        return;
+    }
+
+    let area = edge(s0, s1, s2);
+    if area.abs() < 1e-8 {
+        return;
+    }
+
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let sample = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+            let w0 = edge(s1, s2, sample) / area;
+            let w1 = edge(s2, s0, sample) / area;
+            let w2 = edge(s0, s1, sample) / area;
+
+            if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
+                continue;
+            }
+
+            let depth = w0 * v0.pos.z + w1 * v1.pos.z + w2 * v2.pos.z;
+            let normal = (w0 * v0.nrm + w1 * v1.nrm + w2 * v2.nrm).normalize_or_zero();
+
+            let uv = w0 * v0.uv + w1 * v1.uv + w2 * v2.uv;
+            let mut kd = kd_base;
+            if let Some(t) = tex {
+                kd = kd * t.sample_nearest(uv);
+            }
+
+            let _ = surf.gbuf.try_write(
+                x as usize,
+                y as usize,
+                depth,
+                normal,
+                kd,
+                ks,
+                ns,
+                ke,
+            );
+        }
+    }
+}
+
+fn rasterize_tri_collect(
+    cam: &Camera,
+    clip_a: &mut Vec<ClipVert>,
+    clip_b: &mut Vec<ClipVert>,
+    grow_events: &mut usize,
+    tri: &Tri,
+    mv: Mat4,
+    mvp: Mat4,
+    nm: Mat4,
+    material: &Material,
+    out: &mut Vec<TiledTri>,
+) {
+
+    let mut v0 = Vertex {
+        pos: (mv * tri.a.pos.extend(1.0)).truncate(),
+        nrm: (nm * tri.a.nrm.extend(0.0)).truncate(),
+        uv: tri.a.uv,
+    };
+    let mut v1 = Vertex {
+        pos: (mv * tri.b.pos.extend(1.0)).truncate(),
+        nrm: (nm * tri.b.nrm.extend(0.0)).truncate(),
+        uv: tri.b.uv,
+    };
+    let mut v2 = Vertex {
+        pos: (mv * tri.c.pos.extend(1.0)).truncate(),
+        nrm: (nm * tri.c.nrm.extend(0.0)).truncate(),
+        uv: tri.c.uv,
+    };
+
+    v0.nrm = v0.nrm.normalize_or_zero();
+    v1.nrm = v1.nrm.normalize_or_zero();
+    v2.nrm = v2.nrm.normalize_or_zero();
+
+    let v0c = mvp * tri.a.pos.extend(1.0);
+    let v1c = mvp * tri.b.pos.extend(1.0);
+    let v2c = mvp * tri.c.pos.extend(1.0);
+
+    let p0 = v0c / v0c.w;
+    let p1 = v1c / v1c.w;
+    let p2 = v2c / v2c.w;
+
+    clip_a.clear();
+    clip_b.clear();
+    clip_a.push((v0, p0));
+    clip_a.push((v1, p1));
+    clip_a.push((v2, p2));
+
+    let near = cam.near();
+    let far = cam.far();
+
+    let mut in_is_a = true;
+    for &(plane_z, keep_greater) in &[(near, true), (far, false)] {
+        let (in_buf, out_buf): (&Vec<ClipVert>, &mut Vec<ClipVert>) = if in_is_a {
+            (&*clip_a, clip_b)
+        } else {
+            (&*clip_b, clip_a)
+        };
+        out_buf.clear();
+
+        if in_buf.is_empty() {
+            in_is_a = !in_is_a;
+            break;
+        }
+
+        let n = in_buf.len();
+        for i in 0..n {
+            let (va, pa) = in_buf[i];
+            let (vb, pb) = in_buf[(i + 1) % n];
+
+            let ina = if keep_greater { pa.z >= plane_z } else { pa.z <= plane_z };
+            let inb = if keep_greater { pb.z >= plane_z } else { pb.z <= plane_z };
+
+            if ina && inb {
+                push_checked(out_buf, grow_events, (vb, pb));
+            } else if ina && !inb {
+                push_checked(out_buf, grow_events, clip_edge(va, vb, pa, pb, plane_z));
+            } else if !ina && inb {
+                push_checked(out_buf, grow_events, clip_edge(va, vb, pa, pb, plane_z));
+                push_checked(out_buf, grow_events, (vb, pb));
+            }
+        }
+
+        in_is_a = !in_is_a;
+    }
+
+    let verts: &Vec<ClipVert> = if in_is_a { &*clip_a } else { &*clip_b };
+    if verts.len() < 3 {
+        return;
+    }
+
+    for i in 1..(verts.len() - 1) {
+        let (a, pa) = verts[0];
+        let (b, pb) = verts[i];
+        let (c, pc) = verts[i + 1];
+
+        let mut aa = a;
+        let mut bb = b;
+        let mut cc = c;
+
+        aa.pos = pa.truncate();
+        bb.pos = pb.truncate();
+        cc.pos = pc.truncate();
+
+        out.push(TiledTri {
+            a: aa,
+            b: bb,
+            c: cc,
+            kd: material.kd,
+            ks: material.ks,
+            ns: material.ns,
+            ke: material.ke,
+            map_kd: material.map_kd,
+        });
+    }
+}
+
+fn tri_bbox_pixels(cfg: RasterConfig, v0: Vec3, v1: Vec3, v2: Vec3) -> Option<(i32, i32, i32, i32)> {
+    let s0 = project_to_screen(v0, cfg.width, cfg.height);
+    let s1 = project_to_screen(v1, cfg.width, cfg.height);
+    let s2 = project_to_screen(v2, cfg.width, cfg.height);
+
+    let min_x = s0.x.min(s1.x).min(s2.x).floor().max(0.0) as i32;
+    let max_x = s0
+        .x
+        .max(s1.x)
+        .max(s2.x)
+        .ceil()
+        .min((cfg.width as i32 - 1) as f32) as i32;
+    let min_y = s0.y.min(s1.y).min(s2.y).floor().max(0.0) as i32;
+    let max_y = s0
+        .y
+        .max(s1.y)
+        .max(s2.y)
+        .ceil()
+        .min((cfg.height as i32 - 1) as f32) as i32;
+
+    if min_x > max_x || min_y > max_y {
+        return None;
+    }
+
+    let area = edge(s0, s1, s2);
+    if area.abs() < 1e-8 {
+        return None;
+    }
+
+    Some((min_x, max_x, min_y, max_y))
+}
+
+fn rasterize_tiled(scene: &Scene, cam: &Camera, surf: &mut RasterSurface, scratch: &mut Scratch) {
+    scratch.tiled_tris.clear();
+    {
+        let (clip_a, clip_b, tiled_tris, grow_events) = (
+            &mut scratch.clip_a,
+            &mut scratch.clip_b,
+            &mut scratch.tiled_tris,
+            &mut scratch.grow_events,
+        );
+
+
+    for (mesh, material, transform) in scene.iter_objects() {
+        let mv = cam.view_matrix() * transform.to_mat4();
+        let aspect = surf.cfg.width as f32 / surf.cfg.height as f32;
+        let mvp = cam.projection_matrix(aspect) * mv;
+        let nm = mv.inverse().transpose();
+
+        for idx in mesh.indices.iter() {
+            let i0 = idx[0] as usize;
+            let i1 = idx[1] as usize;
+            let i2 = idx[2] as usize;
+
+            if i0 >= mesh.positions.len() || i1 >= mesh.positions.len() || i2 >= mesh.positions.len() {
+                continue;
+            }
+
+            let n0 = mesh.normals.get(i0).copied().unwrap_or(Vec3::Z);
+            let n1 = mesh.normals.get(i1).copied().unwrap_or(Vec3::Z);
+            let n2 = mesh.normals.get(i2).copied().unwrap_or(Vec3::Z);
+
+            let uv0 = mesh.uvs.get(i0).copied().unwrap_or(Vec2::ZERO);
+            let uv1 = mesh.uvs.get(i1).copied().unwrap_or(Vec2::ZERO);
+            let uv2 = mesh.uvs.get(i2).copied().unwrap_or(Vec2::ZERO);
+
+            let tri = Tri {
+                a: Vertex {
+                    pos: mesh.positions[i0],
+                    nrm: n0,
+                    uv: uv0,
+                },
+                b: Vertex {
+                    pos: mesh.positions[i1],
+                    nrm: n1,
+                    uv: uv1,
+                },
+                c: Vertex {
+                    pos: mesh.positions[i2],
+                    nrm: n2,
+                    uv: uv2,
+                },
+            };
+
+            rasterize_tri_collect(cam, clip_a, clip_b, grow_events, &tri, mv, mvp, nm, material, tiled_tris);
+        }
+    }
+    }
+
+
+    let width = surf.cfg.width as i32;
+    let height = surf.cfg.height as i32;
+
+    if width <= 0 || height <= 0 {
+        return;
+    }
+
+    let tiles_x = (width + TILE_SIZE - 1) / TILE_SIZE;
+    let tiles_y = (height + TILE_SIZE - 1) / TILE_SIZE;
+    let total_tiles = (tiles_x * tiles_y) as usize;
+
+    scratch.tile_counts.resize(total_tiles, 0);
+    scratch.tile_starts.resize(total_tiles + 1, 0);
+    scratch.tile_cursor.resize(total_tiles, 0);
+
+    for c in scratch.tile_counts.iter_mut() {
+        *c = 0;
+    }
+
+    for tri in scratch.tiled_tris.iter() {
+        let Some((min_x, max_x, min_y, max_y)) = tri_bbox_pixels(surf.cfg, tri.a.pos, tri.b.pos, tri.c.pos) else {
+            continue;
+        };
+        let tx0 = (min_x / TILE_SIZE).clamp(0, tiles_x - 1);
+        let tx1 = (max_x / TILE_SIZE).clamp(0, tiles_x - 1);
+        let ty0 = (min_y / TILE_SIZE).clamp(0, tiles_y - 1);
+        let ty1 = (max_y / TILE_SIZE).clamp(0, tiles_y - 1);
+
+        for ty in ty0..=ty1 {
+            for tx in tx0..=tx1 {
+                let id = (ty * tiles_x + tx) as usize;
+                scratch.tile_counts[id] = scratch.tile_counts[id].saturating_add(1);
+            }
+        }
+    }
+
+    let mut sum: u32 = 0;
+    for i in 0..total_tiles {
+        scratch.tile_starts[i] = sum;
+        sum = sum.saturating_add(scratch.tile_counts[i]);
+        scratch.tile_cursor[i] = scratch.tile_starts[i];
+    }
+    scratch.tile_starts[total_tiles] = sum;
+
+    scratch.tile_items.resize(sum as usize, 0);
+
+    for (tri_idx, tri) in scratch.tiled_tris.iter().enumerate() {
+        let Some((min_x, max_x, min_y, max_y)) = tri_bbox_pixels(surf.cfg, tri.a.pos, tri.b.pos, tri.c.pos) else {
+            continue;
+        };
+        let tx0 = (min_x / TILE_SIZE).clamp(0, tiles_x - 1);
+        let tx1 = (max_x / TILE_SIZE).clamp(0, tiles_x - 1);
+        let ty0 = (min_y / TILE_SIZE).clamp(0, tiles_y - 1);
+        let ty1 = (max_y / TILE_SIZE).clamp(0, tiles_y - 1);
+
+        let tri_u32 = u32::try_from(tri_idx).unwrap_or(u32::MAX);
+
+        for ty in ty0..=ty1 {
+            for tx in tx0..=tx1 {
+                let id = (ty * tiles_x + tx) as usize;
+                let pos = scratch.tile_cursor[id] as usize;
+                if pos < scratch.tile_items.len() {
+                    scratch.tile_items[pos] = tri_u32;
+                }
+                scratch.tile_cursor[id] = scratch.tile_cursor[id].saturating_add(1);
+            }
+        }
+    }
+
+    for ty in 0..tiles_y {
+        for tx in 0..tiles_x {
+            let id = (ty * tiles_x + tx) as usize;
+            let start = scratch.tile_starts[id] as usize;
+            let end = scratch.tile_starts[id + 1] as usize;
+
+            if start >= end || end > scratch.tile_items.len() {
+                continue;
+            }
+
+            let clamp_min_x = tx * TILE_SIZE;
+            let clamp_min_y = ty * TILE_SIZE;
+            let clamp_max_x = ((tx + 1) * TILE_SIZE - 1).min(width - 1);
+            let clamp_max_y = ((ty + 1) * TILE_SIZE - 1).min(height - 1);
+
+            for k in start..end {
+                let tri_id = scratch.tile_items[k] as usize;
+                if tri_id >= scratch.tiled_tris.len() {
+                    continue;
+                }
+                let t = scratch.tiled_tris[tri_id];
+                let tex = t.map_kd.and_then(|h| scene.texture(h));
+
+                draw_tri_params_clamped(
+                    surf,
+                    t.a,
+                    t.b,
+                    t.c,
+                    t.kd,
+                    t.ks,
+                    t.ns,
+                    t.ke,
+                    tex,
+                    clamp_min_x,
+                    clamp_max_x,
+                    clamp_min_y,
+                    clamp_max_y,
+                );
+            }
         }
     }
 }
@@ -332,6 +758,25 @@ fn render_to_gbuffer_with_scratch(scene: &Scene, gbuf: &mut GBuffer, scratch: &m
     let mut surf = RasterSurface::new(cfg, gbuf);
     rasterize(scene, &scene.camera, &mut surf, scratch);
     scratch.finish_frame();
+}
+
+fn render_to_gbuffer_tiled_with_scratch(scene: &Scene, gbuf: &mut GBuffer, scratch: &mut Scratch) {
+    let cfg = RasterConfig {
+        width: gbuf.width() as u32,
+        height: gbuf.height() as u32,
+    };
+    gbuf.clear();
+    scratch.begin_frame();
+    let mut surf = RasterSurface::new(cfg, gbuf);
+    rasterize_tiled(scene, &scene.camera, &mut surf, scratch);
+    scratch.finish_frame();
+}
+
+pub fn render_to_gbuffer_tiled(scene: &Scene, gbuf: &mut GBuffer) {
+    TL_SCRATCH.with(|s| {
+        let mut scratch = s.borrow_mut();
+        render_to_gbuffer_tiled_with_scratch(scene, gbuf, &mut scratch);
+    });
 }
 
 pub fn render_to_gbuffer(scene: &Scene, gbuf: &mut GBuffer) {

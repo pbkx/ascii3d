@@ -23,6 +23,7 @@ pub struct RendererConfig {
     glyph_mode: GlyphMode,
     dither_mode: DitherMode,
     temporal: TemporalConfig,
+    tile_binning: bool,
 }
 
 impl Default for RendererConfig {
@@ -35,6 +36,7 @@ impl Default for RendererConfig {
             glyph_mode: GlyphMode::default(),
             dither_mode: DitherMode::None,
             temporal: TemporalConfig::default(),
+            tile_binning: false,
         }
     }
 }
@@ -70,6 +72,10 @@ impl RendererConfig {
 
     pub fn temporal(&self) -> &TemporalConfig {
         &self.temporal
+    }
+
+    pub fn tile_binning(&self) -> bool {
+        self.tile_binning
     }
 
     pub fn with_size(mut self, width: usize, height: usize) -> Self {
@@ -123,6 +129,11 @@ impl RendererConfig {
         self
     }
 
+    pub fn with_tile_binning(mut self, enabled: bool) -> Self {
+        self.tile_binning = enabled;
+        self
+    }
+
     pub fn with_ascii_ramp(self, ramp: AsciiRamp) -> Self {
         self.with_glyph_mode(GlyphMode::AsciiRamp(ramp))
     }
@@ -162,7 +173,11 @@ impl Renderer {
             GlyphMode::HalfBlock => GBuffer::new(self.config.width(), self.config.height().saturating_mul(2)),
             _ => GBuffer::new(self.config.width(), self.config.height()),
         };
-        raster::render_to_gbuffer(scene, &mut gbuf);
+        if self.config.tile_binning {
+            raster::render_to_gbuffer_tiled(scene, &mut gbuf);
+        } else {
+            raster::render_to_gbuffer(scene, &mut gbuf);
+        }
         match self.config.glyph_mode() {
             GlyphMode::HalfBlock => self.map_gbuffer_to_buffer_half_block(&gbuf, target),
             _ => self.map_gbuffer_to_buffer(&gbuf, target),
@@ -336,7 +351,11 @@ impl Renderer {
         }
         target.clear_rgba(0, 0, 0, 0);
         let mut gbuf = GBuffer::new(self.config.width(), self.config.height());
-        raster::render_to_gbuffer(scene, &mut gbuf);
+        if self.config.tile_binning {
+            raster::render_to_gbuffer_tiled(scene, &mut gbuf);
+        } else {
+            raster::render_to_gbuffer(scene, &mut gbuf);
+        }
         self.map_gbuffer_to_image(&gbuf, target);
     }
 
@@ -477,6 +496,29 @@ mod tests {
         renderer_diff.render(&scene, &mut t_diff_2);
         assert_eq!(h_diff, t_diff_2.hash64());
     }
+
+    #[test]
+    fn pr23_tiled_matches_immediate_output_hash() {
+        let mut scene = Scene::new();
+        scene.add_object(Mesh::unit_triangle(), Transform::IDENTITY, Material::default());
+        scene.add_object(Mesh::unit_triangle(), Transform::from_translation(Vec3::new(0.25, 0.0, 0.0)), Material::default());
+
+        let mut img_immediate = crate::targets::ImageTarget::new(64, 64);
+        let mut img_tiled = crate::targets::ImageTarget::new(64, 64);
+
+        let base = RendererConfig::default()
+            .with_size(64, 64)
+            .with_debug_view(DebugView::Albedo);
+
+        let r0 = Renderer::new(base.clone().with_tile_binning(false));
+        let r1 = Renderer::new(base.with_tile_binning(true));
+
+        r0.render_image(&scene, &mut img_immediate);
+        r1.render_image(&scene, &mut img_tiled);
+
+        assert_eq!(img_immediate.hash64(), img_tiled.hash64());
+    }
+
 
     #[test]
     fn smoke_triangle_image_hash_snapshot() {
