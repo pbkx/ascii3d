@@ -15,7 +15,9 @@ pub struct GBuffer {
     width: usize,
     height: usize,
     depth: Vec<f32>,
-    normal: Vec<Vec3>,
+    nx: Vec<f32>,
+    ny: Vec<f32>,
+    nz: Vec<f32>,
     kd: Vec<Vec3>,
     ks: Vec<Vec3>,
     ns: Vec<f32>,
@@ -29,7 +31,9 @@ impl GBuffer {
             width,
             height,
             depth: vec![0.0; n],
-            normal: vec![Vec3::ZERO; n],
+            nx: vec![0.0; n],
+            ny: vec![0.0; n],
+            nz: vec![0.0; n],
             kd: vec![Vec3::ZERO; n],
             ks: vec![Vec3::ZERO; n],
             ns: vec![0.0; n],
@@ -50,13 +54,17 @@ impl GBuffer {
     pub fn clear(&mut self) {
         let n = self.width * self.height;
         self.depth.fill(1e9);
-        self.normal.fill(Vec3::ZERO);
+        self.nx.fill(0.0);
+        self.ny.fill(0.0);
+        self.nz.fill(0.0);
         self.kd.fill(Vec3::new(0.7, 0.7, 0.7));
         self.ks.fill(Vec3::ZERO);
         self.ns.fill(0.0);
         self.ke.fill(Vec3::ZERO);
         debug_assert_eq!(self.depth.len(), n);
-        debug_assert_eq!(self.normal.len(), n);
+        debug_assert_eq!(self.nx.len(), n);
+        debug_assert_eq!(self.ny.len(), n);
+        debug_assert_eq!(self.nz.len(), n);
         debug_assert_eq!(self.kd.len(), n);
         debug_assert_eq!(self.ks.len(), n);
         debug_assert_eq!(self.ns.len(), n);
@@ -87,7 +95,9 @@ impl GBuffer {
         };
         if depth < self.depth[i] {
             self.depth[i] = depth;
-            self.normal[i] = normal;
+            self.nx[i] = normal.x;
+            self.ny[i] = normal.y;
+            self.nz[i] = normal.z;
             self.kd[i] = kd;
             self.ks[i] = ks;
             self.ns[i] = ns;
@@ -102,7 +112,7 @@ impl GBuffer {
         let i = self.idx(x, y)?;
         Some(GBufferPixel {
             depth: self.depth[i],
-            normal: self.normal[i],
+            normal: Vec3::new(self.nx[i], self.ny[i], self.nz[i]),
             kd: self.kd[i],
             ks: self.ks[i],
             ns: self.ns[i],
@@ -114,11 +124,18 @@ impl GBuffer {
         &self.depth
     }
 
-    pub fn normal_slice(&self) -> &[Vec3] {
-        &self.normal
+    pub fn nx_slice(&self) -> &[f32] {
+        &self.nx
     }
 
-    // Backwards-compatible alias (the old API was `albedo`).
+    pub fn ny_slice(&self) -> &[f32] {
+        &self.ny
+    }
+
+    pub fn nz_slice(&self) -> &[f32] {
+        &self.nz
+    }
+
     pub fn albedo_slice(&self) -> &[Vec3] {
         &self.kd
     }
