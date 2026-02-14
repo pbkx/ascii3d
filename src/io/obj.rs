@@ -268,6 +268,10 @@ fn build_mesh(
             }
             triangulate(&idxs, face.mat, &mut mesh, &mut tri_materials);
         }
+    }
+
+
+    if mesh.normals.is_empty() {
         mesh.ensure_normals();
     }
 

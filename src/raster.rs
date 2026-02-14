@@ -17,6 +17,7 @@ struct Vertex {
     pos: Vec3,
     nrm: Vec3,
     uv: Vec2,
+    inv_w: f32,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -27,6 +28,7 @@ struct Tri {
 }
 
 const TILE_SIZE: i32 = 16;
+const W_CLIP_EPS: f32 = 1e-6;
 
 #[derive(Copy, Clone, Debug)]
 struct TiledTri {
@@ -117,8 +119,9 @@ fn push_checked(out: &mut Vec<ClipVert>, grow_events: &mut usize, v: ClipVert) {
     out.push(v);
 }
 
-fn clip_edge(vert_a: Vertex, vert_b: Vertex, pos_a: Vec4, pos_b: Vec4, z_plane: f32) -> ClipVert {
-    let t_param = (z_plane - pos_a.z) / (pos_b.z - pos_a.z);
+fn clip_edge(vert_a: Vertex, vert_b: Vertex, pos_a: Vec4, pos_b: Vec4, dist_a: f32, dist_b: f32) -> ClipVert {
+	let denom = dist_a - dist_b;
+	let t_param = if denom.abs() > 1e-8 { dist_a / denom } else { 0.0 };
     let pos = vert_a.pos + t_param * (vert_b.pos - vert_a.pos);
     let nrm = (vert_a.nrm + t_param * (vert_b.nrm - vert_a.nrm)).normalize_or_zero();
     let uv = vert_a.uv + t_param * (vert_b.uv - vert_a.uv);
@@ -128,6 +131,7 @@ fn clip_edge(vert_a: Vertex, vert_b: Vertex, pos_a: Vec4, pos_b: Vec4, z_plane: 
             pos,
             nrm,
             uv,
+            inv_w: 1.0,
         },
         pos_clip,
     )
@@ -178,11 +182,13 @@ fn draw_tri(
 
             let depth = w0 * v0.pos.z + w1 * v1.pos.z + w2 * v2.pos.z;
             let normal = (w0 * v0.nrm + w1 * v1.nrm + w2 * v2.nrm).normalize_or_zero();
-
-            let uv = w0 * v0.uv + w1 * v1.uv + w2 * v2.uv;
             let mut kd = material.kd;
             if let Some(t) = tex {
-                kd = kd * t.sample_nearest(uv);
+                let denom = w0 * v0.inv_w + w1 * v1.inv_w + w2 * v2.inv_w;
+                if denom.abs() > 1e-8 {
+                    let uv = (v0.uv * (w0 * v0.inv_w) + v1.uv * (w1 * v1.inv_w) + v2.uv * (w2 * v2.inv_w)) / denom;
+                    kd = kd * t.sample_nearest(uv);
+                }
             }
 
             let _ = surf.gbuf.try_write(
@@ -262,11 +268,13 @@ fn draw_tri_params_clamped(
 
             let depth = w0 * v0.pos.z + w1 * v1.pos.z + w2 * v2.pos.z;
             let normal = (w0 * v0.nrm + w1 * v1.nrm + w2 * v2.nrm).normalize_or_zero();
-
-            let uv = w0 * v0.uv + w1 * v1.uv + w2 * v2.uv;
             let mut kd = kd_base;
             if let Some(t) = tex {
-                kd = kd * t.sample_nearest(uv);
+                let denom = w0 * v0.inv_w + w1 * v1.inv_w + w2 * v2.inv_w;
+                if denom.abs() > 1e-8 {
+                    let uv = (v0.uv * (w0 * v0.inv_w) + v1.uv * (w1 * v1.inv_w) + v2.uv * (w2 * v2.inv_w)) / denom;
+                    kd = kd * t.sample_nearest(uv);
+                }
             }
 
             let _ = surf.gbuf.try_write(
@@ -405,11 +413,13 @@ fn draw_tri_params_clamped_chunk(
 
             let depth = w0 * v0.pos.z + w1 * v1.pos.z + w2 * v2.pos.z;
             let normal = (w0 * v0.nrm + w1 * v1.nrm + w2 * v2.nrm).normalize_or_zero();
-
-            let uv = w0 * v0.uv + w1 * v1.uv + w2 * v2.uv;
             let mut kd = kd_base;
             if let Some(t) = tex {
-                kd = kd * t.sample_nearest(uv);
+                let denom = w0 * v0.inv_w + w1 * v1.inv_w + w2 * v2.inv_w;
+                if denom.abs() > 1e-8 {
+                    let uv = (v0.uv * (w0 * v0.inv_w) + v1.uv * (w1 * v1.inv_w) + v2.uv * (w2 * v2.inv_w)) / denom;
+                    kd = kd * t.sample_nearest(uv);
+                }
             }
 
             let _ = gbuf.try_write(
@@ -528,7 +538,7 @@ fn render_tiles_parallel(
 }
 
 fn rasterize_tri_collect(
-    cam: &Camera,
+    _cam: &Camera,
     clip_a: &mut Vec<ClipVert>,
     clip_b: &mut Vec<ClipVert>,
     grow_events: &mut usize,
@@ -544,16 +554,19 @@ fn rasterize_tri_collect(
         pos: (mv * tri.a.pos.extend(1.0)).truncate(),
         nrm: (nm * tri.a.nrm.extend(0.0)).truncate(),
         uv: tri.a.uv,
+        inv_w: 1.0,
     };
     let mut v1 = Vertex {
         pos: (mv * tri.b.pos.extend(1.0)).truncate(),
         nrm: (nm * tri.b.nrm.extend(0.0)).truncate(),
         uv: tri.b.uv,
+        inv_w: 1.0,
     };
     let mut v2 = Vertex {
         pos: (mv * tri.c.pos.extend(1.0)).truncate(),
         nrm: (nm * tri.c.nrm.extend(0.0)).truncate(),
         uv: tri.c.uv,
+        inv_w: 1.0,
     };
 
     v0.nrm = v0.nrm.normalize_or_zero();
@@ -564,21 +577,14 @@ fn rasterize_tri_collect(
     let v1c = mvp * tri.b.pos.extend(1.0);
     let v2c = mvp * tri.c.pos.extend(1.0);
 
-    let p0 = v0c / v0c.w;
-    let p1 = v1c / v1c.w;
-    let p2 = v2c / v2c.w;
-
     clip_a.clear();
     clip_b.clear();
-    clip_a.push((v0, p0));
-    clip_a.push((v1, p1));
-    clip_a.push((v2, p2));
-
-    let near = cam.near();
-    let far = cam.far();
+    clip_a.push((v0, v0c));
+    clip_a.push((v1, v1c));
+    clip_a.push((v2, v2c));
 
     let mut in_is_a = true;
-    for &(plane_z, keep_greater) in &[(near, true), (far, false)] {
+    for plane in 0..3 {
         let (in_buf, out_buf): (&Vec<ClipVert>, &mut Vec<ClipVert>) = if in_is_a {
             (&*clip_a, clip_b)
         } else {
@@ -596,15 +602,30 @@ fn rasterize_tri_collect(
             let (va, pa) = in_buf[i];
             let (vb, pb) = in_buf[(i + 1) % n];
 
-            let ina = if keep_greater { pa.z >= plane_z } else { pa.z <= plane_z };
-            let inb = if keep_greater { pb.z >= plane_z } else { pb.z <= plane_z };
+            let da = if plane == 0 {
+                pa.z + pa.w
+            } else if plane == 1 {
+                -pa.z + pa.w
+            } else {
+                pa.w - W_CLIP_EPS
+            };
+            let db = if plane == 0 {
+                pb.z + pb.w
+            } else if plane == 1 {
+                -pb.z + pb.w
+            } else {
+                pb.w - W_CLIP_EPS
+            };
+
+            let ina = da >= 0.0;
+            let inb = db >= 0.0;
 
             if ina && inb {
                 push_checked(out_buf, grow_events, (vb, pb));
             } else if ina && !inb {
-                push_checked(out_buf, grow_events, clip_edge(va, vb, pa, pb, plane_z));
+                push_checked(out_buf, grow_events, clip_edge(va, vb, pa, pb, da, db));
             } else if !ina && inb {
-                push_checked(out_buf, grow_events, clip_edge(va, vb, pa, pb, plane_z));
+                push_checked(out_buf, grow_events, clip_edge(va, vb, pa, pb, da, db));
                 push_checked(out_buf, grow_events, (vb, pb));
             }
         }
@@ -626,9 +647,20 @@ fn rasterize_tri_collect(
         let mut bb = b;
         let mut cc = c;
 
-        aa.pos = pa.truncate();
-        bb.pos = pb.truncate();
-        cc.pos = pc.truncate();
+        if !(pa.w.is_finite() && pb.w.is_finite() && pc.w.is_finite()) {
+            continue;
+        }
+        if pa.w <= W_CLIP_EPS || pb.w <= W_CLIP_EPS || pc.w <= W_CLIP_EPS {
+            continue;
+        }
+
+        aa.inv_w = 1.0 / pa.w;
+        bb.inv_w = 1.0 / pb.w;
+        cc.inv_w = 1.0 / pc.w;
+
+        aa.pos = (pa / pa.w).truncate();
+        bb.pos = (pb / pb.w).truncate();
+        cc.pos = (pc / pc.w).truncate();
 
         out.push(TiledTri {
             a: aa,
@@ -676,6 +708,9 @@ fn tri_bbox_pixels(cfg: RasterConfig, v0: Vec3, v1: Vec3, v2: Vec3) -> Option<(i
 }
 
 fn rasterize_tiled(scene: &Scene, cam: &Camera, surf: &mut RasterSurface, scratch: &mut Scratch) {
+    if surf.cfg.width == 0 || surf.cfg.height == 0 {
+        return;
+    }
     scratch.tiled_tris.clear();
     {
         let (clip_a, clip_b, tiled_tris, grow_events) = (
@@ -688,7 +723,7 @@ fn rasterize_tiled(scene: &Scene, cam: &Camera, surf: &mut RasterSurface, scratc
 
     for (mesh, material, transform) in scene.iter_objects() {
         let mv = cam.view_matrix() * transform.to_mat4();
-        let aspect = surf.cfg.width as f32 / surf.cfg.height as f32;
+        let aspect = surf.cfg.width as f32 / (surf.cfg.height.max(1) as f32);
         let mvp = cam.projection_matrix(aspect) * mv;
         let nm = mv.inverse().transpose();
 
@@ -714,16 +749,19 @@ fn rasterize_tiled(scene: &Scene, cam: &Camera, surf: &mut RasterSurface, scratc
                     pos: mesh.positions[i0],
                     nrm: n0,
                     uv: uv0,
+                    inv_w: 1.0,
                 },
                 b: Vertex {
                     pos: mesh.positions[i1],
                     nrm: n1,
                     uv: uv1,
+                    inv_w: 1.0,
                 },
                 c: Vertex {
                     pos: mesh.positions[i2],
                     nrm: n2,
                     uv: uv2,
+                    inv_w: 1.0,
                 },
             };
 
@@ -752,6 +790,13 @@ fn rasterize_tiled(scene: &Scene, cam: &Camera, surf: &mut RasterSurface, scratc
         *c = 0;
     }
 
+    if scratch.tiled_tris.len() > (u32::MAX as usize) {
+        rasterize(scene, cam, surf, scratch);
+        return;
+    }
+
+    let mut overflowed = false;
+
     for tri in scratch.tiled_tris.iter() {
         let Some((min_x, max_x, min_y, max_y)) = tri_bbox_pixels(surf.cfg, tri.a.pos, tri.b.pos, tri.c.pos) else {
             continue;
@@ -764,22 +809,40 @@ fn rasterize_tiled(scene: &Scene, cam: &Camera, surf: &mut RasterSurface, scratc
         for ty in ty0..=ty1 {
             for tx in tx0..=tx1 {
                 let id = (ty * tiles_x + tx) as usize;
-                scratch.tile_counts[id] = scratch.tile_counts[id].saturating_add(1);
+                let v = scratch.tile_counts[id];
+                if v == u32::MAX {
+                    overflowed = true;
+                } else {
+                    scratch.tile_counts[id] = v + 1;
+                }
             }
         }
+    }
+
+    if overflowed {
+        rasterize(scene, cam, surf, scratch);
+        return;
     }
 
     let mut sum: u32 = 0;
     for i in 0..total_tiles {
         scratch.tile_starts[i] = sum;
-        sum = sum.saturating_add(scratch.tile_counts[i]);
+        let Some(next) = sum.checked_add(scratch.tile_counts[i]) else {
+            overflowed = true;
+            break;
+        };
+        sum = next;
         scratch.tile_cursor[i] = scratch.tile_starts[i];
+    }
+    if overflowed {
+        rasterize(scene, cam, surf, scratch);
+        return;
     }
     scratch.tile_starts[total_tiles] = sum;
 
     scratch.tile_items.resize(sum as usize, 0);
 
-    for (tri_idx, tri) in scratch.tiled_tris.iter().enumerate() {
+    'bin_fill: for (tri_idx, tri) in scratch.tiled_tris.iter().enumerate() {
         let Some((min_x, max_x, min_y, max_y)) = tri_bbox_pixels(surf.cfg, tri.a.pos, tri.b.pos, tri.c.pos) else {
             continue;
         };
@@ -788,19 +851,31 @@ fn rasterize_tiled(scene: &Scene, cam: &Camera, surf: &mut RasterSurface, scratc
         let ty0 = (min_y / TILE_SIZE).clamp(0, tiles_y - 1);
         let ty1 = (max_y / TILE_SIZE).clamp(0, tiles_y - 1);
 
-        let tri_u32 = u32::try_from(tri_idx).unwrap_or(u32::MAX);
+        let tri_u32 = u32::try_from(tri_idx).unwrap();
 
         for ty in ty0..=ty1 {
             for tx in tx0..=tx1 {
                 let id = (ty * tiles_x + tx) as usize;
                 let pos = scratch.tile_cursor[id] as usize;
-                if pos < scratch.tile_items.len() {
-                    scratch.tile_items[pos] = tri_u32;
+                if pos >= scratch.tile_items.len() {
+                    overflowed = true;
+                    break 'bin_fill;
                 }
-                scratch.tile_cursor[id] = scratch.tile_cursor[id].saturating_add(1);
+                scratch.tile_items[pos] = tri_u32;
+                let Some(next) = scratch.tile_cursor[id].checked_add(1) else {
+                    overflowed = true;
+                    break 'bin_fill;
+                };
+                scratch.tile_cursor[id] = next;
             }
         }
     }
+
+    if overflowed {
+        rasterize(scene, cam, surf, scratch);
+        return;
+    }
+
 
 
     #[cfg(feature = "rayon")]
@@ -866,7 +941,7 @@ fn rasterize_tiled(scene: &Scene, cam: &Camera, surf: &mut RasterSurface, scratc
 
 fn rasterize_tri(
     surf: &mut RasterSurface,
-    cam: &Camera,
+    _cam: &Camera,
     scratch: &mut Scratch,
     tri: &Tri,
     mv: Mat4,
@@ -879,16 +954,19 @@ fn rasterize_tri(
         pos: (mv * tri.a.pos.extend(1.0)).truncate(),
         nrm: (nm * tri.a.nrm.extend(0.0)).truncate(),
         uv: tri.a.uv,
+        inv_w: 1.0,
     };
     let mut v1 = Vertex {
         pos: (mv * tri.b.pos.extend(1.0)).truncate(),
         nrm: (nm * tri.b.nrm.extend(0.0)).truncate(),
         uv: tri.b.uv,
+        inv_w: 1.0,
     };
     let mut v2 = Vertex {
         pos: (mv * tri.c.pos.extend(1.0)).truncate(),
         nrm: (nm * tri.c.nrm.extend(0.0)).truncate(),
         uv: tri.c.uv,
+        inv_w: 1.0,
     };
 
     v0.nrm = v0.nrm.normalize_or_zero();
@@ -899,21 +977,14 @@ fn rasterize_tri(
     let v1c = mvp * tri.b.pos.extend(1.0);
     let v2c = mvp * tri.c.pos.extend(1.0);
 
-    let p0 = v0c / v0c.w;
-    let p1 = v1c / v1c.w;
-    let p2 = v2c / v2c.w;
-
     scratch.clip_a.clear();
     scratch.clip_b.clear();
-    scratch.clip_a.push((v0, p0));
-    scratch.clip_a.push((v1, p1));
-    scratch.clip_a.push((v2, p2));
-
-    let near = cam.near();
-    let far = cam.far();
+    scratch.clip_a.push((v0, v0c));
+    scratch.clip_a.push((v1, v1c));
+    scratch.clip_a.push((v2, v2c));
 
     let mut in_is_a = true;
-    for &(plane_z, keep_greater) in &[(near, true), (far, false)] {
+    for plane in 0..3 {
         let (in_buf, out_buf) = if in_is_a {
             (&scratch.clip_a, &mut scratch.clip_b)
         } else {
@@ -931,15 +1002,30 @@ fn rasterize_tri(
             let (va, pa) = in_buf[i];
             let (vb, pb) = in_buf[(i + 1) % n];
 
-            let ina = if keep_greater { pa.z >= plane_z } else { pa.z <= plane_z };
-            let inb = if keep_greater { pb.z >= plane_z } else { pb.z <= plane_z };
+            let da = if plane == 0 {
+                pa.z + pa.w
+            } else if plane == 1 {
+                -pa.z + pa.w
+            } else {
+                pa.w - W_CLIP_EPS
+            };
+            let db = if plane == 0 {
+                pb.z + pb.w
+            } else if plane == 1 {
+                -pb.z + pb.w
+            } else {
+                pb.w - W_CLIP_EPS
+            };
+
+            let ina = da >= 0.0;
+            let inb = db >= 0.0;
 
             if ina && inb {
                 push_checked(out_buf, &mut scratch.grow_events, (vb, pb));
             } else if ina && !inb {
-                push_checked(out_buf, &mut scratch.grow_events, clip_edge(va, vb, pa, pb, plane_z));
+                push_checked(out_buf, &mut scratch.grow_events, clip_edge(va, vb, pa, pb, da, db));
             } else if !ina && inb {
-                push_checked(out_buf, &mut scratch.grow_events, clip_edge(va, vb, pa, pb, plane_z));
+                push_checked(out_buf, &mut scratch.grow_events, clip_edge(va, vb, pa, pb, da, db));
                 push_checked(out_buf, &mut scratch.grow_events, (vb, pb));
             }
         }
@@ -961,18 +1047,32 @@ fn rasterize_tri(
         let mut bb = b;
         let mut cc = c;
 
-        aa.pos = pa.truncate();
-        bb.pos = pb.truncate();
-        cc.pos = pc.truncate();
+        if !(pa.w.is_finite() && pb.w.is_finite() && pc.w.is_finite()) {
+            continue;
+        }
+        if pa.w <= W_CLIP_EPS || pb.w <= W_CLIP_EPS || pc.w <= W_CLIP_EPS {
+            continue;
+        }
+
+        aa.inv_w = 1.0 / pa.w;
+        bb.inv_w = 1.0 / pb.w;
+        cc.inv_w = 1.0 / pc.w;
+
+        aa.pos = (pa / pa.w).truncate();
+        bb.pos = (pb / pb.w).truncate();
+        cc.pos = (pc / pc.w).truncate();
 
         draw_tri(surf, aa, bb, cc, material, tex);
     }
 }
 
 fn rasterize(scene: &Scene, cam: &Camera, surf: &mut RasterSurface, scratch: &mut Scratch) {
+    if surf.cfg.width == 0 || surf.cfg.height == 0 {
+        return;
+    }
     for (mesh, material, transform) in scene.iter_objects() {
         let mv = cam.view_matrix() * transform.to_mat4();
-        let aspect = surf.cfg.width as f32 / surf.cfg.height as f32;
+        let aspect = surf.cfg.width as f32 / (surf.cfg.height.max(1) as f32);
         let mvp = cam.projection_matrix(aspect) * mv;
         let nm = mv.inverse().transpose();
 
@@ -1000,16 +1100,19 @@ fn rasterize(scene: &Scene, cam: &Camera, surf: &mut RasterSurface, scratch: &mu
                     pos: mesh.positions[i0],
                     nrm: n0,
                     uv: uv0,
+                    inv_w: 1.0,
                 },
                 b: Vertex {
                     pos: mesh.positions[i1],
                     nrm: n1,
                     uv: uv1,
+                    inv_w: 1.0,
                 },
                 c: Vertex {
                     pos: mesh.positions[i2],
                     nrm: n2,
                     uv: uv2,
+                    inv_w: 1.0,
                 },
             };
 

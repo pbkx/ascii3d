@@ -169,7 +169,7 @@ impl Renderer {
     fn count_tris(scene: &Scene) -> u64 {
         let mut t: u64 = 0;
         for (mesh, _xf, _mat) in scene.iter_objects() {
-            t += (mesh.indices.len() / 3) as u64;
+            t += mesh.indices.len() as u64;
         }
         t
     }
