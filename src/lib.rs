@@ -25,6 +25,7 @@
     clippy::verbose_bit_mask,
     clippy::wrap_ok,
 )]
+pub mod bvh;
 pub mod camera;
 pub mod debug;
 pub mod dither;
@@ -47,6 +48,7 @@ pub mod transform;
 pub mod types;
 
 pub use crate::{
+    bvh::{Aabb, MeshBvh, MeshHit, Ray, SceneBvh, SceneHit},
     camera::{Camera, Projection},
     debug::DebugView,
     dither::DitherMode,

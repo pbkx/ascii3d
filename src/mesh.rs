@@ -127,6 +127,12 @@ impl Mesh {
         }
     }
 
+
+
+pub fn build_bvh(&self) -> crate::bvh::MeshBvh {
+    crate::bvh::MeshBvh::build(self)
+}
+
     pub fn validate_basic(&self) -> Result<(), MeshValidationError> {
         for (i, p) in self.positions.iter().enumerate() {
             if !(p.x.is_finite() && p.y.is_finite() && p.z.is_finite()) {
