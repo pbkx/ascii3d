@@ -3,7 +3,7 @@ use crate::{
     Material, Mesh, Scene, Transform,
 };
 use crate::texture::{Texture, TextureHandle};
-use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
+use glam::{Mat3, Mat4, Quat, Vec2, Vec3, Vec4};
 use serde::Deserialize;
 use std::{
     collections::HashMap,
@@ -84,6 +84,8 @@ struct GltfRoot {
     #[serde(default)]
     images: Vec<ImageDef>,
     #[serde(default)]
+    skins: Vec<SkinDef>,
+    #[serde(default)]
     nodes: Vec<NodeDef>,
     #[serde(default)]
     scenes: Vec<SceneDef>,
@@ -128,6 +130,8 @@ struct AccessorDef {
     count: usize,
     #[serde(rename = "type")]
     kind: String,
+    #[serde(default)]
+    normalized: bool,
     #[serde(default)]
     sparse: Option<serde_json::Value>,
 }
@@ -188,6 +192,8 @@ struct NodeDef {
     #[serde(default)]
     mesh: Option<usize>,
     #[serde(default)]
+    skin: Option<usize>,
+    #[serde(default)]
     children: Vec<usize>,
     #[serde(default)]
     matrix: Option<[f32; 16]>,
@@ -197,6 +203,16 @@ struct NodeDef {
     rotation: Option<[f32; 4]>,
     #[serde(default)]
     scale: Option<[f32; 3]>,
+}
+
+#[derive(Deserialize)]
+struct SkinDef {
+    #[serde(rename = "inverseBindMatrices", default)]
+    inverse_bind_matrices: Option<usize>,
+    #[serde(default)]
+    joints: Vec<usize>,
+    #[serde(default)]
+    skeleton: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -254,6 +270,19 @@ struct MaterialBinding {
 struct LoadedPrimitive {
     mesh: Mesh,
     material: Material,
+    skinning: Option<PrimitiveSkinningData>,
+}
+
+#[derive(Clone)]
+struct PrimitiveSkinningData {
+    joints: Vec<[u16; 4]>,
+    weights: Vec<[f32; 4]>,
+}
+
+#[derive(Clone)]
+struct LoadedSkin {
+    joints: Vec<usize>,
+    inverse_bind_matrices: Vec<Mat4>,
 }
 
 #[derive(Clone, Copy)]
@@ -447,6 +476,121 @@ fn read_accessor_vec4(
     Ok(out)
 }
 
+fn read_accessor_mat4(
+    root: &GltfRoot,
+    buffers: &[Vec<u8>],
+    accessor_index: usize,
+) -> Result<Vec<Mat4>, GltfError> {
+    let layout = accessor_layout(root, buffers, accessor_index)?;
+    if layout.accessor.kind != "MAT4" || layout.accessor.component_type != 5126 {
+        return Err(GltfError::UnsupportedAccessor);
+    }
+    let mut out = Vec::with_capacity(layout.count);
+    for i in 0..layout.count {
+        let e = accessor_elem(&layout, i)?;
+        let mut cols = [0.0f32; 16];
+        for j in 0..16 {
+            let off = j * 4;
+            cols[j] = read_f32_le(&e[off..(off + 4)]);
+        }
+        out.push(Mat4::from_cols_array(&cols));
+    }
+    Ok(out)
+}
+
+fn read_accessor_joint_indices(
+    root: &GltfRoot,
+    buffers: &[Vec<u8>],
+    accessor_index: usize,
+) -> Result<Vec<[u16; 4]>, GltfError> {
+    let layout = accessor_layout(root, buffers, accessor_index)?;
+    if layout.accessor.kind != "VEC4" {
+        return Err(GltfError::UnsupportedAccessor);
+    }
+    let mut out = Vec::with_capacity(layout.count);
+    match layout.accessor.component_type {
+        5121 => {
+            for i in 0..layout.count {
+                let e = accessor_elem(&layout, i)?;
+                out.push([
+                    u16::from(e[0]),
+                    u16::from(e[1]),
+                    u16::from(e[2]),
+                    u16::from(e[3]),
+                ]);
+            }
+        }
+        5123 => {
+            for i in 0..layout.count {
+                let e = accessor_elem(&layout, i)?;
+                out.push([
+                    read_u16_le(&e[0..2]),
+                    read_u16_le(&e[2..4]),
+                    read_u16_le(&e[4..6]),
+                    read_u16_le(&e[6..8]),
+                ]);
+            }
+        }
+        _ => return Err(GltfError::UnsupportedAccessor),
+    }
+    Ok(out)
+}
+
+fn read_accessor_joint_weights(
+    root: &GltfRoot,
+    buffers: &[Vec<u8>],
+    accessor_index: usize,
+) -> Result<Vec<[f32; 4]>, GltfError> {
+    let layout = accessor_layout(root, buffers, accessor_index)?;
+    if layout.accessor.kind != "VEC4" {
+        return Err(GltfError::UnsupportedAccessor);
+    }
+    let mut out = Vec::with_capacity(layout.count);
+    match layout.accessor.component_type {
+        5126 => {
+            for i in 0..layout.count {
+                let e = accessor_elem(&layout, i)?;
+                out.push([
+                    read_f32_le(&e[0..4]),
+                    read_f32_le(&e[4..8]),
+                    read_f32_le(&e[8..12]),
+                    read_f32_le(&e[12..16]),
+                ]);
+            }
+        }
+        5121 => {
+            if !layout.accessor.normalized {
+                return Err(GltfError::UnsupportedAccessor);
+            }
+            for i in 0..layout.count {
+                let e = accessor_elem(&layout, i)?;
+                out.push([
+                    f32::from(e[0]) / 255.0,
+                    f32::from(e[1]) / 255.0,
+                    f32::from(e[2]) / 255.0,
+                    f32::from(e[3]) / 255.0,
+                ]);
+            }
+        }
+        5123 => {
+            if !layout.accessor.normalized {
+                return Err(GltfError::UnsupportedAccessor);
+            }
+            for i in 0..layout.count {
+                let e = accessor_elem(&layout, i)?;
+                out.push([
+                    f32::from(read_u16_le(&e[0..2])) / 65535.0,
+                    f32::from(read_u16_le(&e[2..4])) / 65535.0,
+                    f32::from(read_u16_le(&e[4..6])) / 65535.0,
+                    f32::from(read_u16_le(&e[6..8])) / 65535.0,
+                ]);
+            }
+        }
+        _ => return Err(GltfError::UnsupportedAccessor),
+    }
+    Ok(out)
+}
+
 fn read_accessor_indices(
     root: &GltfRoot,
     buffers: &[Vec<u8>],
@@ -542,6 +686,31 @@ fn primitive_to_mesh(
     }
 
     Ok(mesh)
+}
+
+fn primitive_skinning_data(
+    root: &GltfRoot,
+    buffers: &[Vec<u8>],
+    primitive: &PrimitiveDef,
+    vertex_count: usize,
+) -> Result<Option<PrimitiveSkinningData>, GltfError> {
+    let joints_accessor = primitive.attributes.get("JOINTS_0").copied();
+    let weights_accessor = primitive.attributes.get("WEIGHTS_0").copied();
+
+    let (Some(joints_ix), Some(weights_ix)) = (joints_accessor, weights_accessor) else {
+        if joints_accessor.is_some() || weights_accessor.is_some() {
+            return Err(GltfError::MissingAttribute);
+        }
+        return Ok(None);
+    };
+
+    let joints = read_accessor_joint_indices(root, buffers, joints_ix)?;
+    let weights = read_accessor_joint_weights(root, buffers, weights_ix)?;
+    if joints.len() != vertex_count || weights.len() != vertex_count {
+        return Err(GltfError::InvalidAnimation);
+    }
+
+    Ok(Some(PrimitiveSkinningData { joints, weights }))
 }
 
 fn quat_from_xyzw(x: f32, y: f32, z: f32, w: f32) -> Result<Quat, GltfError> {
@@ -765,6 +934,192 @@ fn build_material_bindings(
     }
 
     Ok(out)
+}
+
+fn load_skins(root: &GltfRoot, buffers: &[Vec<u8>]) -> Result<Vec<LoadedSkin>, GltfError> {
+    let mut out = Vec::with_capacity(root.skins.len());
+    for skin in &root.skins {
+        if skin.joints.is_empty() {
+            return Err(GltfError::InvalidAnimation);
+        }
+        if let Some(skeleton) = skin.skeleton {
+            if skeleton >= root.nodes.len() {
+                return Err(GltfError::InvalidIndex);
+            }
+        }
+        for &joint in &skin.joints {
+            if joint >= root.nodes.len() {
+                return Err(GltfError::InvalidIndex);
+            }
+        }
+
+        let inverse_bind_matrices = if let Some(accessor_index) = skin.inverse_bind_matrices {
+            let mats = read_accessor_mat4(root, buffers, accessor_index)?;
+            if mats.len() != skin.joints.len() {
+                return Err(GltfError::InvalidAnimation);
+            }
+            mats
+        } else {
+            vec![Mat4::IDENTITY; skin.joints.len()]
+        };
+
+        out.push(LoadedSkin {
+            joints: skin.joints.clone(),
+            inverse_bind_matrices,
+        });
+    }
+    Ok(out)
+}
+
+fn compute_node_world_matrices(root: &GltfRoot, locals: &[Mat4]) -> Result<Vec<Mat4>, GltfError> {
+    if locals.len() != root.nodes.len() {
+        return Err(GltfError::InvalidIndex);
+    }
+
+    let mut parent: Vec<Option<usize>> = vec![None; root.nodes.len()];
+    for (node_index, node) in root.nodes.iter().enumerate() {
+        for &child in &node.children {
+            if child >= root.nodes.len() {
+                return Err(GltfError::InvalidIndex);
+            }
+            if parent[child].is_some() {
+                return Err(GltfError::InvalidNodeGraph);
+            }
+            parent[child] = Some(node_index);
+        }
+    }
+
+    let mut world = vec![Mat4::IDENTITY; root.nodes.len()];
+    let mut done = vec![false; root.nodes.len()];
+    let mut visiting = vec![false; root.nodes.len()];
+
+    fn resolve_world(
+        node_index: usize,
+        parent: &[Option<usize>],
+        locals: &[Mat4],
+        world: &mut [Mat4],
+        done: &mut [bool],
+        visiting: &mut [bool],
+    ) -> Result<Mat4, GltfError> {
+        if done[node_index] {
+            return Ok(world[node_index]);
+        }
+        if visiting[node_index] {
+            return Err(GltfError::InvalidNodeGraph);
+        }
+
+        visiting[node_index] = true;
+        let node_world = if let Some(parent_index) = parent[node_index] {
+            resolve_world(parent_index, parent, locals, world, done, visiting)? * locals[node_index]
+        } else {
+            locals[node_index]
+        };
+        if !node_world.is_finite() {
+            return Err(GltfError::InvalidTransform);
+        }
+        world[node_index] = node_world;
+        done[node_index] = true;
+        visiting[node_index] = false;
+        Ok(node_world)
+    }
+
+    for i in 0..root.nodes.len() {
+        let _ = resolve_world(i, &parent, locals, &mut world, &mut done, &mut visiting)?;
+    }
+
+    Ok(world)
+}
+
+fn skin_joint_matrices(
+    node_index: usize,
+    skin: &LoadedSkin,
+    world_matrices: &[Mat4],
+) -> Result<Vec<Mat4>, GltfError> {
+    let node_world = *world_matrices.get(node_index).ok_or(GltfError::InvalidIndex)?;
+    let inv_node_world = node_world.inverse();
+    if !inv_node_world.is_finite() {
+        return Err(GltfError::InvalidTransform);
+    }
+
+    let mut out = Vec::with_capacity(skin.joints.len());
+    for (joint_slot, &joint_node) in skin.joints.iter().enumerate() {
+        let joint_world = *world_matrices.get(joint_node).ok_or(GltfError::InvalidIndex)?;
+        let ibm = *skin
+            .inverse_bind_matrices
+            .get(joint_slot)
+            .ok_or(GltfError::InvalidAnimation)?;
+        out.push(inv_node_world * joint_world * ibm);
+    }
+    Ok(out)
+}
+
+fn skin_mesh_in_place(
+    mesh: &mut Mesh,
+    skinning: &PrimitiveSkinningData,
+    joint_matrices: &[Mat4],
+) -> Result<(), GltfError> {
+    if mesh.positions.len() != skinning.joints.len() || mesh.positions.len() != skinning.weights.len() {
+        return Err(GltfError::InvalidAnimation);
+    }
+    if mesh.normals.len() != mesh.positions.len() {
+        return Err(GltfError::InvalidAnimation);
+    }
+
+    let mut normal_mats = Vec::with_capacity(joint_matrices.len());
+    for m in joint_matrices {
+        let lin = Mat3::from_mat4(*m);
+        let inv_t = lin.inverse().transpose();
+        if inv_t.is_finite() {
+            normal_mats.push(inv_t);
+        } else {
+            normal_mats.push(lin);
+        }
+    }
+
+    for i in 0..mesh.positions.len() {
+        let joints = skinning.joints[i];
+        let raw_weights = skinning.weights[i];
+        let mut weights = [
+            raw_weights[0].max(0.0),
+            raw_weights[1].max(0.0),
+            raw_weights[2].max(0.0),
+            raw_weights[3].max(0.0),
+        ];
+        let sum = weights[0] + weights[1] + weights[2] + weights[3];
+        if sum <= 0.0 {
+            continue;
+        }
+        let inv_sum = 1.0 / sum;
+        for w in &mut weights {
+            *w *= inv_sum;
+        }
+
+        let src_pos = mesh.positions[i].extend(1.0);
+        let src_nrm = mesh.normals[i];
+
+        let mut out_pos = Vec4::ZERO;
+        let mut out_nrm = Vec3::ZERO;
+        for k in 0..4 {
+            let w = weights[k];
+            if w <= 0.0 {
+                continue;
+            }
+            let joint_slot = usize::from(joints[k]);
+            let jm = *joint_matrices.get(joint_slot).ok_or(GltfError::InvalidIndex)?;
+            let nm = *normal_mats.get(joint_slot).ok_or(GltfError::InvalidIndex)?;
+            out_pos += (jm * src_pos) * w;
+            out_nrm += (nm * src_nrm) * w;
+        }
+
+        mesh.positions[i] = out_pos.truncate();
+        mesh.normals[i] = if out_nrm.length_squared() > 0.0 {
+            out_nrm.normalize()
+        } else {
+            src_nrm
+        };
+    }
+
+    Ok(())
 }
 
 fn parse_interpolation(s: Option<&str>) -> Result<AnimationInterpolation, GltfError> {
@@ -1043,14 +1398,31 @@ fn build_scene(
                 binding.texcoord_set,
                 binding.material.map_kd.is_some(),
             )?;
+            let skinning = primitive_skinning_data(root, buffers, p, mesh.positions.len())?;
 
             prims.push(LoadedPrimitive {
                 mesh,
                 material: binding.material.clone(),
+                skinning,
             });
         }
         per_mesh_primitives.push(prims);
     }
+
+    let locals = if let Some(values) = animated_locals {
+        if values.len() != root.nodes.len() {
+            return Err(GltfError::InvalidIndex);
+        }
+        values.to_vec()
+    } else {
+        let mut mats = Vec::with_capacity(root.nodes.len());
+        for node in &root.nodes {
+            mats.push(node_local_matrix(node)?);
+        }
+        mats
+    };
+    let world_matrices = compute_node_world_matrices(root, &locals)?;
+    let loaded_skins = load_skins(root, buffers)?;
 
     let mut visiting = vec![false; root.nodes.len()];
 
@@ -1058,7 +1430,9 @@ fn build_scene(
         node_index: usize,
         root: &GltfRoot,
         per_mesh_primitives: &[Vec<LoadedPrimitive>],
-        animated_locals: Option<&[Mat4]>,
+        world_matrices: &[Mat4],
+        loaded_skins: &[LoadedSkin],
+        locals: &[Mat4],
         parent_world: Mat4,
         visiting: &mut [bool],
         scene: &mut Scene,
@@ -1069,18 +1443,26 @@ fn build_scene(
         }
         visiting[node_index] = true;
 
-        let local = if let Some(locals) = animated_locals {
-            *locals.get(node_index).ok_or(GltfError::InvalidIndex)?
-        } else {
-            node_local_matrix(node)?
-        };
+        let local = *locals.get(node_index).ok_or(GltfError::InvalidIndex)?;
         let world = parent_world * local;
 
         if let Some(mesh_index) = node.mesh {
             let primitives = per_mesh_primitives.get(mesh_index).ok_or(GltfError::InvalidIndex)?;
             let xf = world_to_transform(world)?;
-            for prim in primitives {
-                let _ = scene.add_object(prim.mesh.clone(), xf, prim.material.clone());
+
+            if let Some(skin_index) = node.skin {
+                let skin = loaded_skins.get(skin_index).ok_or(GltfError::InvalidIndex)?;
+                let joint_matrices = skin_joint_matrices(node_index, skin, world_matrices)?;
+                for prim in primitives {
+                    let skinning = prim.skinning.as_ref().ok_or(GltfError::MissingAttribute)?;
+                    let mut mesh = prim.mesh.clone();
+                    skin_mesh_in_place(&mut mesh, skinning, &joint_matrices)?;
+                    let _ = scene.add_object(mesh, xf, prim.material.clone());
+                }
+            } else {
+                for prim in primitives {
+                    let _ = scene.add_object(prim.mesh.clone(), xf, prim.material.clone());
+                }
             }
         }
 
@@ -1089,7 +1471,9 @@ fn build_scene(
                 child,
                 root,
                 per_mesh_primitives,
-                animated_locals,
+                world_matrices,
+                loaded_skins,
+                locals,
                 world,
                 visiting,
                 scene,
@@ -1106,7 +1490,9 @@ fn build_scene(
                 i,
                 root,
                 &per_mesh_primitives,
-                animated_locals,
+                &world_matrices,
+                &loaded_skins,
+                &locals,
                 Mat4::IDENTITY,
                 &mut visiting,
                 &mut scene,
@@ -1122,7 +1508,9 @@ fn build_scene(
             node,
             root,
             &per_mesh_primitives,
-            animated_locals,
+            &world_matrices,
+            &loaded_skins,
+            &locals,
             Mat4::IDENTITY,
             &mut visiting,
             &mut scene,
@@ -1388,6 +1776,110 @@ mod tests {
         )
     }
 
+    fn tiny_skinned_gltf_inline() -> String {
+        let mut bytes = Vec::new();
+
+        let positions = [
+            0.0f32, 2.0, 0.0, //
+            0.2, 2.0, 0.0, //
+            0.0, 2.2, 0.0,
+        ];
+        for v in positions {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+
+        let joints = [
+            [1u8, 0u8, 0u8, 0u8],
+            [1u8, 0u8, 0u8, 0u8],
+            [1u8, 0u8, 0u8, 0u8],
+        ];
+        for j in joints {
+            bytes.extend_from_slice(&j);
+        }
+
+        let weights = [
+            1.0f32, 0.0, 0.0, 0.0, //
+            1.0, 0.0, 0.0, 0.0, //
+            1.0, 0.0, 0.0, 0.0,
+        ];
+        for w in weights {
+            bytes.extend_from_slice(&w.to_le_bytes());
+        }
+
+        let indices = [0u16, 1u16, 2u16];
+        for i in indices {
+            bytes.extend_from_slice(&i.to_le_bytes());
+        }
+        bytes.extend_from_slice(&[0u8, 0u8]);
+
+        let ibm0 = Mat4::IDENTITY.to_cols_array();
+        for v in ibm0 {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        let ibm1 = Mat4::from_translation(Vec3::new(0.0, -1.0, 0.0)).to_cols_array();
+        for v in ibm1 {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+
+        let times = [0.0f32, 1.0f32];
+        for t in times {
+            bytes.extend_from_slice(&t.to_le_bytes());
+        }
+
+        let s = std::f32::consts::FRAC_1_SQRT_2;
+        let rotations = [
+            0.0f32, 0.0, 0.0, 1.0, //
+            0.0, 0.0, s, s,
+        ];
+        for r in rotations {
+            bytes.extend_from_slice(&r.to_le_bytes());
+        }
+
+        use base64::Engine as _;
+        let payload = base64::engine::general_purpose::STANDARD.encode(bytes);
+
+        format!(
+            r#"{{
+"asset":{{"version":"2.0"}},
+"buffers":[{{"uri":"data:application/octet-stream;base64,{payload}","byteLength":272}}],
+"bufferViews":[
+  {{"buffer":0,"byteOffset":0,"byteLength":36}},
+  {{"buffer":0,"byteOffset":36,"byteLength":12}},
+  {{"buffer":0,"byteOffset":48,"byteLength":48}},
+  {{"buffer":0,"byteOffset":96,"byteLength":6}},
+  {{"buffer":0,"byteOffset":104,"byteLength":128}},
+  {{"buffer":0,"byteOffset":232,"byteLength":8}},
+  {{"buffer":0,"byteOffset":240,"byteLength":32}}
+],
+"accessors":[
+  {{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}},
+  {{"bufferView":1,"componentType":5121,"count":3,"type":"VEC4"}},
+  {{"bufferView":2,"componentType":5126,"count":3,"type":"VEC4"}},
+  {{"bufferView":3,"componentType":5123,"count":3,"type":"SCALAR"}},
+  {{"bufferView":4,"componentType":5126,"count":2,"type":"MAT4"}},
+  {{"bufferView":5,"componentType":5126,"count":2,"type":"SCALAR"}},
+  {{"bufferView":6,"componentType":5126,"count":2,"type":"VEC4"}}
+],
+"meshes":[{{"primitives":[{{
+  "attributes":{{"POSITION":0,"JOINTS_0":1,"WEIGHTS_0":2}},
+  "indices":3
+}}]}}],
+"skins":[{{"inverseBindMatrices":4,"joints":[0,1],"skeleton":0}}],
+"nodes":[
+  {{"children":[1,2]}},
+  {{"translation":[0.0,1.0,0.0]}},
+  {{"mesh":0,"skin":0}}
+],
+"animations":[{{
+  "samplers":[{{"input":5,"output":6,"interpolation":"LINEAR"}}],
+  "channels":[{{"sampler":0,"target":{{"node":1,"path":"rotation"}}}}]
+}}],
+"scenes":[{{"nodes":[0]}}],
+"scene":0
+}}"#
+        )
+    }
+
     #[test]
     fn gltf_inline_loads_mesh_nodes_and_transforms() {
         let gltf = tiny_gltf_inline();
@@ -1509,5 +2001,61 @@ mod tests {
         assert_eq!(h_a, h_a_repeat);
         assert_ne!(h_a, h_b);
     }
-}
 
+    #[test]
+    fn gltf_skinning_math_matches_expected_vertices() {
+        let gltf = tiny_skinned_gltf_inline();
+        let scene_t0 = load_gltf_str_at_time(&gltf, 0, 0.0).unwrap();
+        let scene_t1 = load_gltf_str_at_time(&gltf, 0, 1.0).unwrap();
+
+        assert_eq!(scene_t0.object_count(), 1);
+        assert_eq!(scene_t1.object_count(), 1);
+
+        let (mesh_t0, _mat_t0, xf_t0) = scene_t0.iter_objects().next().unwrap();
+        let (mesh_t1, _mat_t1, xf_t1) = scene_t1.iter_objects().next().unwrap();
+
+        assert!(xf_t0.translation.length() < 1e-6);
+        assert!(xf_t1.translation.length() < 1e-6);
+
+        assert!((mesh_t0.positions[0].x - 0.0).abs() < 1e-5);
+        assert!((mesh_t0.positions[0].y - 2.0).abs() < 1e-5);
+        assert!((mesh_t1.positions[0].x + 1.0).abs() < 1e-5);
+        assert!((mesh_t1.positions[0].y - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn gltf_skinning_animation_renders_deterministically() {
+        let gltf = tiny_skinned_gltf_inline();
+        let mut scene_a = load_gltf_str_at_time(&gltf, 0, 0.0).unwrap();
+        let mut scene_b = load_gltf_str_at_time(&gltf, 0, 1.0).unwrap();
+        let mut scene_a_repeat = load_gltf_str_at_time(&gltf, 0, 0.0).unwrap();
+
+        for scene in [&mut scene_a, &mut scene_b, &mut scene_a_repeat] {
+            scene.camera = Camera::new(
+                Transform::IDENTITY,
+                Projection::Orthographic {
+                    half_height: 2.0,
+                    near: -10.0,
+                    far: 10.0,
+                },
+            );
+        }
+
+        let renderer = Renderer::new(
+            RendererConfig::default()
+                .with_size(64, 32)
+                .with_debug_view(DebugView::Albedo),
+        );
+
+        let mut img_a = crate::targets::ImageTarget::new(64, 32);
+        let mut img_b = crate::targets::ImageTarget::new(64, 32);
+        let mut img_a_repeat = crate::targets::ImageTarget::new(64, 32);
+
+        renderer.render_image(&scene_a, &mut img_a);
+        renderer.render_image(&scene_b, &mut img_b);
+        renderer.render_image(&scene_a_repeat, &mut img_a_repeat);
+
+        assert_eq!(img_a.hash64(), img_a_repeat.hash64());
+        assert_ne!(img_a.hash64(), img_b.hash64());
+    }
+}
