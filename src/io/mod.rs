@@ -13,4 +13,6 @@ pub use obj::{
 pub use stl::{load_stl, load_stl_str, StlError};
 pub use texture::{load_texture_rgba8, load_texture_rgba8_from_bytes, TextureIoError};
 #[cfg(feature = "gltf")]
-pub use gltf::{load_gltf, load_gltf_str, GltfError};
+pub use gltf::{
+    load_gltf, load_gltf_at_time, load_gltf_str, load_gltf_str_at_time, GltfError,
+};
