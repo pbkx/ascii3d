@@ -2,12 +2,21 @@
 name = "ascii3d"
 version = "0.1.0"
 edition = "2021"
+description = "3D ASCII graphics engine"
+license = "MIT"
+readme = "README.md"
+documentation = "https://docs.rs/ascii3d"
+keywords = ["ascii", "renderer", "terminal", "graphics", "gltf"]
+categories = ["graphics", "rendering"]
 
 exclude = [
     "/.cargo/*",
     "/tools/*",
     "/examples/*",
 ]
+
+[package.metadata.docs.rs]
+all-features = true
 
 [dependencies]
 glam = "0.30.10"
@@ -66,4 +75,5 @@ harness = false
 [[bench]]
 name = "render_end_to_end"
 harness = false
+
 
