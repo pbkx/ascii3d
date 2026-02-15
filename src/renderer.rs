@@ -1,6 +1,9 @@
 use crate::{
     debug::{rgb_for_view, scalar_for_view, DebugView},
     dither::{Dither, DitherMode},
+    framegraph::{
+        apply_contrast, apply_edge_enhance, apply_tone_map_reinhard, FrameGraph, FramePassId, PostProcessSettings,
+    },
     glyph::{AsciiRamp, GlyphMode},
     gbuffer::GBuffer,
     profile::RenderStats,
@@ -26,6 +29,7 @@ pub struct RendererConfig {
     dither_mode: DitherMode,
     temporal: TemporalConfig,
     tile_binning: bool,
+    post_process: PostProcessSettings,
 }
 
 impl Default for RendererConfig {
@@ -39,6 +43,7 @@ impl Default for RendererConfig {
             dither_mode: DitherMode::None,
             temporal: TemporalConfig::default(),
             tile_binning: false,
+            post_process: PostProcessSettings::default(),
         }
     }
 }
@@ -78,6 +83,10 @@ impl RendererConfig {
 
     pub fn tile_binning(&self) -> bool {
         self.tile_binning
+    }
+
+    pub fn post_process(&self) -> PostProcessSettings {
+        self.post_process
     }
 
     pub fn with_size(mut self, width: usize, height: usize) -> Self {
@@ -133,6 +142,26 @@ impl RendererConfig {
 
     pub fn with_tile_binning(mut self, enabled: bool) -> Self {
         self.tile_binning = enabled;
+        self
+    }
+
+    pub fn with_post_process(mut self, settings: PostProcessSettings) -> Self {
+        self.post_process = settings;
+        self
+    }
+
+    pub fn with_tone_map(mut self, enabled: bool) -> Self {
+        self.post_process.tone_map = enabled;
+        self
+    }
+
+    pub fn with_contrast(mut self, contrast: f32) -> Self {
+        self.post_process.contrast = contrast;
+        self
+    }
+
+    pub fn with_edge_enhance(mut self, strength: f32) -> Self {
+        self.post_process.edge_enhance = strength;
         self
     }
 
@@ -240,7 +269,65 @@ impl Renderer {
         }
     }
 
+    fn luma(rgb: Vec3) -> f32 {
+        0.2126 * rgb.x + 0.7152 * rgb.y + 0.0722 * rgb.z
+    }
+
+    fn to_u8_rgb(rgb: Vec3) -> Rgb8 {
+        let rgb_u8 = (rgb.clamp(Vec3::ZERO, Vec3::ONE) * 255.0 + Vec3::splat(0.5)).as_uvec3();
+        Rgb8::new(
+            u8::try_from(rgb_u8.x).unwrap_or(255),
+            u8::try_from(rgb_u8.y).unwrap_or(255),
+            u8::try_from(rgb_u8.z).unwrap_or(255),
+        )
+    }
+
+    fn shade_gbuffer_to_rgb_buffer(&self, gbuf: &GBuffer, out: &mut [Vec3]) {
+        for y in 0..gbuf.height() {
+            for x in 0..gbuf.width() {
+                let i = y * gbuf.width() + x;
+                let Some(p) = gbuf.at(x, y) else {
+                    out[i] = Vec3::ZERO;
+                    continue;
+                };
+                if !p.depth.is_finite() {
+                    out[i] = Vec3::ZERO;
+                    continue;
+                }
+                out[i] = rgb_for_view(
+                    self.config.debug_view(),
+                    self.config.shader(),
+                    p.depth,
+                    p.normal,
+                    p.kd,
+                    p.ks,
+                    p.ns,
+                    p.ke,
+                );
+            }
+        }
+    }
+
+    fn run_post_process_passes(&self, rgb: &mut [Vec3], width: usize, height: usize) {
+        let graph = FrameGraph::new(self.config.post_process());
+        for pass in graph.passes() {
+            match pass.id {
+                FramePassId::ToneMap => apply_tone_map_reinhard(rgb),
+                FramePassId::Contrast => apply_contrast(rgb, self.config.post_process().contrast),
+                FramePassId::EdgeEnhance => {
+                    apply_edge_enhance(rgb, width, height, self.config.post_process().edge_enhance)
+                }
+                FramePassId::RasterizeGBuffer | FramePassId::Shade | FramePassId::ResolveTarget => {}
+            }
+        }
+    }
+
     fn map_gbuffer_to_buffer(&self, gbuf: &GBuffer, target: &mut BufferTarget) {
+        if self.config.post_process().has_any_post_pass() {
+            self.map_gbuffer_to_buffer_with_post(gbuf, target);
+            return;
+        }
+
         let dither_mode = self.config.dither_mode();
         let mut dither = Dither::new(dither_mode, target.width());
         let temporal_cfg = self.config.temporal();
@@ -327,7 +414,81 @@ impl Renderer {
         }
     }
 
+    fn map_gbuffer_to_buffer_with_post(&self, gbuf: &GBuffer, target: &mut BufferTarget) {
+        let mut rgb = vec![Vec3::ZERO; gbuf.width().saturating_mul(gbuf.height())];
+        self.shade_gbuffer_to_rgb_buffer(gbuf, &mut rgb);
+        self.run_post_process_passes(&mut rgb, gbuf.width(), gbuf.height());
+
+        let dither_mode = self.config.dither_mode();
+        let mut dither = Dither::new(dither_mode, target.width());
+        let temporal_cfg = self.config.temporal();
+        let mut temporal = self.temporal.borrow_mut();
+        if temporal_cfg.enabled {
+            temporal.resize(target.width(), target.height());
+        }
+
+        for y in 0..target.height() {
+            for x in 0..target.width() {
+                let Some(p) = gbuf.at(x, y) else {
+                    continue;
+                };
+                if !p.depth.is_finite() {
+                    continue;
+                }
+
+                let i = y * gbuf.width() + x;
+                let rgb_px = rgb[i].clamp(Vec3::ZERO, Vec3::ONE);
+                let shade_scalar = Self::luma(rgb_px).clamp(0.0, 1.0);
+                let mut cell = match self.config.glyph_mode() {
+                    GlyphMode::AsciiRamp(ramp) => {
+                        let bytes = ramp.bytes();
+                        if bytes.is_empty() {
+                            Cell::new(' ', Rgb8::BLACK, Rgb8::BLACK, p.depth)
+                        } else {
+                            let mut t = shade_scalar;
+                            let g = ramp.gamma();
+                            if g != 1.0 {
+                                t = t.powf(g);
+                            }
+
+                            let idx = if temporal_cfg.enabled {
+                                let mut q = if temporal_cfg.anchored_dither && dither_mode == DitherMode::None {
+                                    TemporalQuantizer::Anchored
+                                } else {
+                                    TemporalQuantizer::Dither(&mut dither)
+                                };
+                                temporal.step_index(x, y, t, bytes.len(), &mut q, temporal_cfg)
+                            } else if dither_mode == DitherMode::None {
+                                if bytes.len() <= 1 {
+                                    0
+                                } else {
+                                    let s = t * (bytes.len() as f32 - 1.0);
+                                    (s + 0.5).floor() as usize
+                                }
+                            } else {
+                                dither.quantize_index(t, bytes.len(), x, y)
+                            };
+
+                            let idx = idx.min(bytes.len().saturating_sub(1));
+                            Cell::new(bytes[idx] as char, Rgb8::BLACK, Rgb8::BLACK, p.depth)
+                        }
+                    }
+                    GlyphMode::HalfBlock => self.config.glyph_mode().cell_from_scalar(shade_scalar, p.depth),
+                };
+                cell.fg = Self::to_u8_rgb(rgb_px);
+                cell.bg = Rgb8::BLACK;
+                let _ = target.set(x, y, cell);
+            }
+            dither.finish_row();
+        }
+    }
+
     fn map_gbuffer_to_buffer_half_block(&self, gbuf: &GBuffer, target: &mut BufferTarget) {
+        if self.config.post_process().has_any_post_pass() {
+            self.map_gbuffer_to_buffer_half_block_with_post(gbuf, target);
+            return;
+        }
+
         fn to_u8_rgb(rgb: Vec3) -> Rgb8 {
             let rgb_u8 = (rgb.clamp(Vec3::ZERO, Vec3::ONE) * 255.0 + Vec3::splat(0.5)).as_uvec3();
             Rgb8::new(rgb_u8.x as u8, rgb_u8.y as u8, rgb_u8.z as u8)
@@ -393,6 +554,43 @@ impl Renderer {
                         p1.ns,
                         p1.ke,
                     ));
+                    let _ = target.set(x, y, Cell::new('▄', rgb1, Rgb8::BLACK, p1.depth));
+                } else {
+                    let _ = target.set(x, y, Cell::new(' ', Rgb8::BLACK, Rgb8::BLACK, f32::INFINITY));
+                }
+            }
+        }
+    }
+
+    fn map_gbuffer_to_buffer_half_block_with_post(&self, gbuf: &GBuffer, target: &mut BufferTarget) {
+        let mut rgb = vec![Vec3::ZERO; gbuf.width().saturating_mul(gbuf.height())];
+        self.shade_gbuffer_to_rgb_buffer(gbuf, &mut rgb);
+        self.run_post_process_passes(&mut rgb, gbuf.width(), gbuf.height());
+
+        for y in 0..target.height() {
+            let y0 = y.saturating_mul(2);
+            let y1 = y0 + 1;
+            for x in 0..target.width() {
+                let p0 = if y0 < gbuf.height() { gbuf.at(x, y0) } else { None };
+                let p1 = if y1 < gbuf.height() { gbuf.at(x, y1) } else { None };
+
+                let p0_ok = p0.map_or(false, |p| p.depth.is_finite());
+                let p1_ok = p1.map_or(false, |p| p.depth.is_finite());
+
+                if p0_ok && p1_ok {
+                    let p0 = p0.unwrap();
+                    let p1 = p1.unwrap();
+                    let rgb0 = Self::to_u8_rgb(rgb[y0 * gbuf.width() + x]);
+                    let rgb1 = Self::to_u8_rgb(rgb[y1 * gbuf.width() + x]);
+                    let depth = p0.depth.min(p1.depth);
+                    let _ = target.set(x, y, Cell::new('▀', rgb0, rgb1, depth));
+                } else if p0_ok {
+                    let p0 = p0.unwrap();
+                    let rgb0 = Self::to_u8_rgb(rgb[y0 * gbuf.width() + x]);
+                    let _ = target.set(x, y, Cell::new('▀', rgb0, Rgb8::BLACK, p0.depth));
+                } else if p1_ok {
+                    let p1 = p1.unwrap();
+                    let rgb1 = Self::to_u8_rgb(rgb[y1 * gbuf.width() + x]);
                     let _ = target.set(x, y, Cell::new('▄', rgb1, Rgb8::BLACK, p1.depth));
                 } else {
                     let _ = target.set(x, y, Cell::new(' ', Rgb8::BLACK, Rgb8::BLACK, f32::INFINITY));
@@ -486,6 +684,25 @@ impl Renderer {
     }
 
     fn map_gbuffer_to_image(&self, gbuf: &GBuffer, target: &mut ImageTarget) {
+        if self.config.post_process().has_any_post_pass() {
+            let mut rgb = vec![Vec3::ZERO; gbuf.width().saturating_mul(gbuf.height())];
+            self.shade_gbuffer_to_rgb_buffer(gbuf, &mut rgb);
+            self.run_post_process_passes(&mut rgb, gbuf.width(), gbuf.height());
+            for y in 0..target.height() {
+                for x in 0..target.width() {
+                    let Some(p) = gbuf.at(x, y) else {
+                        continue;
+                    };
+                    if !p.depth.is_finite() {
+                        continue;
+                    }
+                    let rgb_u8 = Self::to_u8_rgb(rgb[y * gbuf.width() + x]);
+                    let _ = target.set_rgba(x, y, rgb_u8.r, rgb_u8.g, rgb_u8.b, 255);
+                }
+            }
+            return;
+        }
+
         for y in 0..target.height() {
             for x in 0..target.width() {
                 let Some(p) = gbuf.at(x, y) else {
@@ -737,6 +954,36 @@ mod tests {
             hashes.insert(img.hash64());
         }
         assert_eq!(hashes.len(), views.len());
+    }
+
+    #[test]
+    fn post_pass_toggles_change_output_hash() {
+        let mut scene = Scene::new();
+        scene.add_object(Mesh::unit_cube(), Transform::IDENTITY, Material::default());
+        let mut base_img = crate::targets::ImageTarget::new(64, 32);
+        let mut tone_img = crate::targets::ImageTarget::new(64, 32);
+        let mut contrast_img = crate::targets::ImageTarget::new(64, 32);
+        let mut edge_img = crate::targets::ImageTarget::new(64, 32);
+
+        let base_cfg = RendererConfig::default().with_size(64, 32).with_debug_view(DebugView::Final);
+        let r_base = Renderer::new(base_cfg.clone());
+        let r_tone = Renderer::new(base_cfg.clone().with_tone_map(true));
+        let r_contrast = Renderer::new(base_cfg.clone().with_contrast(1.35));
+        let r_edge = Renderer::new(base_cfg.with_edge_enhance(0.75));
+
+        r_base.render_image(&scene, &mut base_img);
+        r_tone.render_image(&scene, &mut tone_img);
+        r_contrast.render_image(&scene, &mut contrast_img);
+        r_edge.render_image(&scene, &mut edge_img);
+
+        let h_base = base_img.hash64();
+        assert_ne!(h_base, tone_img.hash64());
+        assert_ne!(h_base, contrast_img.hash64());
+        assert_ne!(h_base, edge_img.hash64());
+
+        let mut tone_img_2 = crate::targets::ImageTarget::new(64, 32);
+        r_tone.render_image(&scene, &mut tone_img_2);
+        assert_eq!(tone_img.hash64(), tone_img_2.hash64());
     }
 
     #[test]

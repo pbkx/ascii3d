@@ -29,6 +29,7 @@ pub mod bvh;
 pub mod camera;
 pub mod debug;
 pub mod dither;
+pub mod framegraph;
 pub mod glyph;
 pub mod gbuffer;
 pub mod io;
@@ -52,6 +53,7 @@ pub use crate::{
     camera::{Camera, Projection},
     debug::DebugView,
     dither::DitherMode,
+    framegraph::{FrameGraph, FramePass, FramePassId, PostProcessSettings},
     gbuffer::GBuffer,
     glyph::{AsciiRamp, GlyphMode},
     light::Light,
