@@ -26,12 +26,25 @@ optional = true
 version = "1.11.0"
 optional = true
 
+[dependencies.serde]
+version = "1.0.228"
+features = ["derive"]
+optional = true
+
+[dependencies.serde_json]
+version = "1.0.149"
+optional = true
+
+[dependencies.base64]
+version = "0.22.1"
+optional = true
+
 [features]
 default = []
 
 terminal = ["dep:crossterm"]
 png = []
-gltf = []
+gltf = ["dep:serde", "dep:serde_json", "dep:base64"]
 rayon = ["dep:rayon"]
 image = ["dep:image"]
 

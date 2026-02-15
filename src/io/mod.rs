@@ -2,6 +2,8 @@ pub mod mtl;
 pub mod obj;
 pub mod stl;
 pub mod texture;
+#[cfg(feature = "gltf")]
+pub mod gltf;
 
 pub use mtl::{parse_mtl, MtlError, MtlLibrary};
 pub use obj::{
@@ -10,3 +12,5 @@ pub use obj::{
 };
 pub use stl::{load_stl, load_stl_str, StlError};
 pub use texture::{load_texture_rgba8, load_texture_rgba8_from_bytes, TextureIoError};
+#[cfg(feature = "gltf")]
+pub use gltf::{load_gltf, load_gltf_str, GltfError};
