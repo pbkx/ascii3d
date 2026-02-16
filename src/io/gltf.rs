@@ -176,19 +176,31 @@ struct MaterialDef {
     #[serde(rename = "normalTexture", default)]
     normal_texture: Option<NormalTextureInfoDef>,
     #[serde(rename = "occlusionTexture", default)]
-    occlusion_texture: Option<TextureInfoDef>,
+    occlusion_texture: Option<OcclusionTextureInfoDef>,
     #[serde(rename = "emissiveTexture", default)]
     emissive_texture: Option<TextureInfoDef>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct NormalTextureInfoDef {
-    #[serde(rename = "index")]
-    _index: usize,
+    index: usize,
     #[serde(rename = "texCoord", default)]
-    _tex_coord: Option<usize>,
+    tex_coord: Option<usize>,
     #[serde(default)]
-    _scale: Option<f32>,
+    scale: Option<f32>,
+    #[serde(default)]
+    extensions: Option<TextureInfoExtensionsDef>,
+}
+
+#[derive(Clone, Deserialize)]
+struct OcclusionTextureInfoDef {
+    index: usize,
+    #[serde(rename = "texCoord", default)]
+    tex_coord: Option<usize>,
+    #[serde(default)]
+    strength: Option<f32>,
+    #[serde(default)]
+    extensions: Option<TextureInfoExtensionsDef>,
 }
 
 #[derive(Deserialize)]
@@ -205,7 +217,7 @@ struct PbrMetallicRoughnessDef {
     metallic_roughness_texture: Option<TextureInfoDef>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct TextureInfoDef {
     index: usize,
     #[serde(rename = "texCoord", default)]
@@ -214,13 +226,13 @@ struct TextureInfoDef {
     extensions: Option<TextureInfoExtensionsDef>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct TextureInfoExtensionsDef {
     #[serde(rename = "KHR_texture_transform", default)]
     texture_transform: Option<TextureTransformDef>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct TextureTransformDef {
     #[serde(default)]
     offset: Option<[f32; 2]>,
@@ -400,7 +412,6 @@ struct AccessorLayout<'a> {
 #[derive(Clone)]
 struct MaterialBinding {
     material: Material,
-    texcoord_set: usize,
 }
 
 #[derive(Clone)]
@@ -842,8 +853,7 @@ fn primitive_to_mesh(
     root: &GltfRoot,
     buffers: &[Vec<u8>],
     primitive: &PrimitiveDef,
-    texcoord_set: usize,
-    require_uv: bool,
+    required_uv_sets: &[usize],
 ) -> Result<Mesh, GltfError> {
     if let Some(mode) = primitive.mode {
         if mode != 4 {
@@ -863,17 +873,32 @@ fn primitive_to_mesh(
         Vec::new()
     };
 
-    let uv_semantic = format!("TEXCOORD_{texcoord_set}");
-    let uvs = if let Some(uv) = primitive.attributes.get(&uv_semantic) {
+    let uvs = if let Some(uv) = primitive.attributes.get("TEXCOORD_0") {
         read_accessor_vec2(root, buffers, *uv)?
-    } else if require_uv {
-        return Err(GltfError::MissingAttribute);
     } else {
         Vec::new()
     };
+    let uvs1 = if let Some(uv) = primitive.attributes.get("TEXCOORD_1") {
+        read_accessor_vec2(root, buffers, *uv)?
+    } else {
+        Vec::new()
+    };
+    for &set in required_uv_sets {
+        match set {
+            0 if uvs.is_empty() => return Err(GltfError::MissingAttribute),
+            1 if uvs1.is_empty() => return Err(GltfError::MissingAttribute),
+            0 | 1 => {}
+            _ => return Err(GltfError::MissingAttribute),
+        }
+    }
 
     let colors = if let Some(c0) = primitive.attributes.get("COLOR_0") {
         read_accessor_color4(root, buffers, *c0)?
+    } else {
+        Vec::new()
+    };
+    let tangents = if let Some(tg) = primitive.attributes.get("TANGENT") {
+        read_accessor_vec4(root, buffers, *tg)?
     } else {
         Vec::new()
     };
@@ -898,13 +923,18 @@ fn primitive_to_mesh(
     mesh.positions = positions;
     mesh.normals = normals;
     mesh.uvs = uvs;
+    mesh.uvs1 = uvs1;
     mesh.colors = colors;
+    mesh.tangents = tangents;
     mesh.indices = index_data
         .chunks_exact(3)
         .map(|c| [c[0], c[1], c[2]])
         .collect();
 
     if !mesh.colors.is_empty() && mesh.colors.len() != mesh.positions.len() {
+        return Err(GltfError::UnsupportedAccessor);
+    }
+    if !mesh.tangents.is_empty() && mesh.tangents.len() != mesh.positions.len() {
         return Err(GltfError::UnsupportedAccessor);
     }
 
@@ -997,6 +1027,11 @@ fn apply_world_to_mesh(mesh: &mut Mesh, world: Mat4) -> Result<(), GltfError> {
         return Err(GltfError::InvalidTransform);
     }
     let normal_m = Mat3::from_mat4(world).inverse().transpose();
+    let tangent_m = if normal_m.is_finite() {
+        normal_m
+    } else {
+        Mat3::from_mat4(world)
+    };
     for p in &mut mesh.positions {
         *p = (world * p.extend(1.0)).truncate();
     }
@@ -1008,6 +1043,13 @@ fn apply_world_to_mesh(mesh: &mut Mesh, world: Mat4) -> Result<(), GltfError> {
                 (Mat3::from_mat4(world) * *n).normalize_or_zero()
             };
             *n = nn;
+        }
+    }
+    if !mesh.tangents.is_empty() {
+        for t in &mut mesh.tangents {
+            let tt = (tangent_m * t.truncate()).normalize_or_zero();
+            let handedness = if t.w < 0.0 { -1.0 } else { 1.0 };
+            *t = Vec4::new(tt.x, tt.y, tt.z, handedness);
         }
     }
     Ok(())
@@ -1022,11 +1064,26 @@ fn default_material_binding() -> MaterialBinding {
     material.double_sided = false;
     material.map_kd = None;
     material.map_kd_path = None;
+    material.map_kd_texcoord_set = 0;
     material.map_kd_uv_transform = Mat3::IDENTITY;
-    MaterialBinding {
-        material,
-        texcoord_set: 0,
-    }
+    material.map_normal = None;
+    material.map_normal_texcoord_set = 0;
+    material.map_normal_uv_transform = Mat3::IDENTITY;
+    material.map_normal_scale = 1.0;
+    material.map_occlusion = None;
+    material.map_occlusion_texcoord_set = 0;
+    material.map_occlusion_uv_transform = Mat3::IDENTITY;
+    material.map_occlusion_strength = 1.0;
+    material.map_emissive = None;
+    material.map_emissive_texcoord_set = 0;
+    material.map_emissive_uv_transform = Mat3::IDENTITY;
+    material.map_metallic_roughness = None;
+    material.map_metallic_roughness_texcoord_set = 0;
+    material.map_metallic_roughness_uv_transform = Mat3::IDENTITY;
+    material.metallic = 1.0;
+    material.roughness = 1.0;
+    material.pbr_metallic_roughness = true;
+    MaterialBinding { material }
 }
 
 fn parse_alpha_mode(s: Option<&str>) -> AlphaMode {
@@ -1035,6 +1092,13 @@ fn parse_alpha_mode(s: Option<&str>) -> AlphaMode {
         "BLEND" => AlphaMode::Blend,
         _ => AlphaMode::Opaque,
     }
+}
+
+fn update_material_spec_from_metal_roughness(material: &mut Material) {
+    let metallic = material.metallic.clamp(0.0, 1.0);
+    let roughness = material.roughness.clamp(0.045, 1.0);
+    material.ks = Vec3::splat(0.04).lerp(material.kd, metallic);
+    material.ns = ((2.0 / (roughness * roughness)) - 2.0).clamp(1.0, 1024.0);
 }
 
 fn texture_uv_transform(tex_info: &TextureInfoDef) -> (usize, Mat3) {
@@ -1071,6 +1135,24 @@ fn texture_uv_transform(tex_info: &TextureInfoDef) -> (usize, Mat3) {
     (texcoord, transform)
 }
 
+fn texture_uv_transform_normal(tex_info: &NormalTextureInfoDef) -> (usize, Mat3) {
+    let as_info = TextureInfoDef {
+        index: tex_info.index,
+        tex_coord: tex_info.tex_coord,
+        extensions: tex_info.extensions.clone(),
+    };
+    texture_uv_transform(&as_info)
+}
+
+fn texture_uv_transform_occlusion(tex_info: &OcclusionTextureInfoDef) -> (usize, Mat3) {
+    let as_info = TextureInfoDef {
+        index: tex_info.index,
+        tex_coord: tex_info.tex_coord,
+        extensions: tex_info.extensions.clone(),
+    };
+    texture_uv_transform(&as_info)
+}
+
 fn srgb_to_linear_u8(v: u8) -> u8 {
     let s = (v as f32) / 255.0;
     let l = if s <= 0.04045 {
@@ -1081,12 +1163,18 @@ fn srgb_to_linear_u8(v: u8) -> u8 {
     ((l.clamp(0.0, 1.0) * 255.0) + 0.5).floor() as u8
 }
 
-fn linearize_base_color_texture(tex: &mut Texture) {
+fn linearize_srgb_texture(tex: &mut Texture) {
     for px in tex.rgba8.chunks_exact_mut(4) {
         px[0] = srgb_to_linear_u8(px[0]);
         px[1] = srgb_to_linear_u8(px[1]);
         px[2] = srgb_to_linear_u8(px[2]);
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TextureColorSpace {
+    Linear,
+    Srgb,
 }
 
 fn view_bytes<'a>(
@@ -1227,13 +1315,14 @@ fn texture_sampler_for_texture(
     Ok(sampler)
 }
 
-fn ensure_base_color_texture_handle(
+fn ensure_texture_handle(
     root: &GltfRoot,
     buffers: &[Vec<u8>],
     base_dir: Option<&Path>,
     scene: &mut Scene,
     texture_cache: &mut [Option<TextureHandle>],
     texture_index: usize,
+    color_space: TextureColorSpace,
 ) -> Result<TextureHandle, GltfError> {
     let Some(slot) = texture_cache.get_mut(texture_index) else {
         return Err(GltfError::InvalidIndex);
@@ -1251,7 +1340,9 @@ fn ensure_base_color_texture_handle(
     let image_index = tex_def.source.ok_or(GltfError::MissingImageSource)?;
     let bytes = load_image_bytes(root, buffers, base_dir, image_index)?;
     let mut texture = load_texture_rgba8_from_bytes_raw(&bytes).map_err(map_texture_io_error)?;
-    linearize_base_color_texture(&mut texture);
+    if color_space == TextureColorSpace::Srgb {
+        linearize_srgb_texture(&mut texture);
+    }
     texture.rebuild_mipmaps();
     texture.sampler = sampler;
     let handle = scene.add_texture(texture);
@@ -1265,16 +1356,11 @@ fn build_material_bindings(
     base_dir: Option<&Path>,
     scene: &mut Scene,
 ) -> Result<Vec<MaterialBinding>, GltfError> {
-    let mut texture_cache: Vec<Option<TextureHandle>> = vec![None; root.textures.len()];
+    let mut texture_cache_linear: Vec<Option<TextureHandle>> = vec![None; root.textures.len()];
+    let mut texture_cache_srgb: Vec<Option<TextureHandle>> = vec![None; root.textures.len()];
     let mut out = Vec::with_capacity(root.materials.len());
 
     for material in &root.materials {
-        if material.normal_texture.is_some()
-            || material.occlusion_texture.is_some()
-            || material.emissive_texture.is_some()
-        {
-            return Err(GltfError::UnsupportedMaterialFeature);
-        }
         let mut binding = default_material_binding();
         binding.material.alpha_mode = parse_alpha_mode(material.alpha_mode.as_deref());
         binding.material.alpha_cutoff = material.alpha_cutoff.unwrap_or(0.5).clamp(0.0, 1.0);
@@ -1286,6 +1372,8 @@ fn build_material_bindings(
                 ke[2].clamp(0.0, 1.0),
             );
         }
+        binding.material.metallic = 1.0;
+        binding.material.roughness = 1.0;
 
         if let Some(pbr) = &material.pbr_metallic_roughness {
             let factor = pbr.base_color_factor.unwrap_or([1.0, 1.0, 1.0, 1.0]);
@@ -1296,29 +1384,91 @@ fn build_material_bindings(
             );
             binding.material.alpha = factor[3].clamp(0.0, 1.0);
 
-            let metallic = pbr.metallic_factor.unwrap_or(1.0).clamp(0.0, 1.0);
-            let roughness = pbr.roughness_factor.unwrap_or(1.0).clamp(0.045, 1.0);
-            binding.material.ks = Vec3::splat(0.04).lerp(binding.material.kd, metallic);
-            binding.material.ns = ((2.0 / (roughness * roughness)) - 2.0).clamp(1.0, 1024.0);
-
-            if pbr.metallic_roughness_texture.is_some() {
-                return Err(GltfError::UnsupportedMaterialFeature);
-            }
+            binding.material.metallic = pbr.metallic_factor.unwrap_or(1.0).clamp(0.0, 1.0);
+            binding.material.roughness = pbr.roughness_factor.unwrap_or(1.0).clamp(0.045, 1.0);
+            update_material_spec_from_metal_roughness(&mut binding.material);
 
             if let Some(tex_info) = &pbr.base_color_texture {
-                let handle = ensure_base_color_texture_handle(
+                let handle = ensure_texture_handle(
                     root,
                     buffers,
                     base_dir,
                     scene,
-                    &mut texture_cache,
+                    &mut texture_cache_srgb,
                     tex_info.index,
+                    TextureColorSpace::Srgb,
                 )?;
                 binding.material.map_kd = Some(handle);
                 let (texcoord_set, uv_transform) = texture_uv_transform(tex_info);
-                binding.texcoord_set = texcoord_set;
+                binding.material.map_kd_texcoord_set = texcoord_set;
                 binding.material.map_kd_uv_transform = uv_transform;
             }
+
+            if let Some(tex_info) = &pbr.metallic_roughness_texture {
+                let handle = ensure_texture_handle(
+                    root,
+                    buffers,
+                    base_dir,
+                    scene,
+                    &mut texture_cache_linear,
+                    tex_info.index,
+                    TextureColorSpace::Linear,
+                )?;
+                binding.material.map_metallic_roughness = Some(handle);
+                let (texcoord_set, uv_transform) = texture_uv_transform(tex_info);
+                binding.material.map_metallic_roughness_texcoord_set = texcoord_set;
+                binding.material.map_metallic_roughness_uv_transform = uv_transform;
+            }
+        }
+
+        if let Some(tex_info) = &material.normal_texture {
+            let handle = ensure_texture_handle(
+                root,
+                buffers,
+                base_dir,
+                scene,
+                &mut texture_cache_linear,
+                tex_info.index,
+                TextureColorSpace::Linear,
+            )?;
+            binding.material.map_normal = Some(handle);
+            let (texcoord_set, uv_transform) = texture_uv_transform_normal(tex_info);
+            binding.material.map_normal_texcoord_set = texcoord_set;
+            binding.material.map_normal_uv_transform = uv_transform;
+            binding.material.map_normal_scale = tex_info.scale.unwrap_or(1.0).max(0.0);
+        }
+
+        if let Some(tex_info) = &material.occlusion_texture {
+            let handle = ensure_texture_handle(
+                root,
+                buffers,
+                base_dir,
+                scene,
+                &mut texture_cache_linear,
+                tex_info.index,
+                TextureColorSpace::Linear,
+            )?;
+            binding.material.map_occlusion = Some(handle);
+            let (texcoord_set, uv_transform) = texture_uv_transform_occlusion(tex_info);
+            binding.material.map_occlusion_texcoord_set = texcoord_set;
+            binding.material.map_occlusion_uv_transform = uv_transform;
+            binding.material.map_occlusion_strength = tex_info.strength.unwrap_or(1.0).clamp(0.0, 1.0);
+        }
+
+        if let Some(tex_info) = &material.emissive_texture {
+            let handle = ensure_texture_handle(
+                root,
+                buffers,
+                base_dir,
+                scene,
+                &mut texture_cache_srgb,
+                tex_info.index,
+                TextureColorSpace::Srgb,
+            )?;
+            binding.material.map_emissive = Some(handle);
+            let (texcoord_set, uv_transform) = texture_uv_transform(tex_info);
+            binding.material.map_emissive_texcoord_set = texcoord_set;
+            binding.material.map_emissive_uv_transform = uv_transform;
         }
 
         out.push(binding);
@@ -1461,6 +1611,9 @@ fn skin_mesh_in_place(
     if mesh.normals.len() != mesh.positions.len() {
         return Err(GltfError::InvalidAnimation);
     }
+    if !mesh.tangents.is_empty() && mesh.tangents.len() != mesh.positions.len() {
+        return Err(GltfError::InvalidAnimation);
+    }
 
     let mut normal_mats = Vec::with_capacity(joint_matrices.len());
     for m in joint_matrices {
@@ -1493,9 +1646,15 @@ fn skin_mesh_in_place(
 
         let src_pos = mesh.positions[i].extend(1.0);
         let src_nrm = mesh.normals[i];
+        let src_tangent = if mesh.tangents.is_empty() {
+            None
+        } else {
+            Some(mesh.tangents[i])
+        };
 
         let mut out_pos = Vec4::ZERO;
         let mut out_nrm = Vec3::ZERO;
+        let mut out_tangent = Vec3::ZERO;
         for k in 0..4 {
             let w = weights[k];
             if w <= 0.0 {
@@ -1508,14 +1667,36 @@ fn skin_mesh_in_place(
             let nm = *normal_mats.get(joint_slot).ok_or(GltfError::InvalidIndex)?;
             out_pos += (jm * src_pos) * w;
             out_nrm += (nm * src_nrm) * w;
+            if let Some(t) = src_tangent {
+                out_tangent += (nm * t.truncate()) * w;
+            }
         }
 
         mesh.positions[i] = out_pos.truncate();
-        mesh.normals[i] = if out_nrm.length_squared() > 0.0 {
+        let dst_normal = if out_nrm.length_squared() > 0.0 {
             out_nrm.normalize()
         } else {
             src_nrm
         };
+        mesh.normals[i] = dst_normal;
+        if let Some(src_tangent) = src_tangent {
+            let mut t = if out_tangent.length_squared() > 0.0 {
+                out_tangent.normalize()
+            } else {
+                src_tangent.truncate().normalize_or_zero()
+            };
+            t = (t - dst_normal * dst_normal.dot(t)).normalize_or_zero();
+            if t.length_squared() <= 1e-12 {
+                let fallback_axis = if dst_normal.z.abs() < 0.999 {
+                    Vec3::Z
+                } else {
+                    Vec3::Y
+                };
+                t = dst_normal.cross(fallback_axis).normalize_or_zero();
+            }
+            let handedness = if src_tangent.w < 0.0 { -1.0 } else { 1.0 };
+            mesh.tangents[i] = Vec4::new(t.x, t.y, t.z, handedness);
+        }
     }
 
     Ok(())
@@ -1921,6 +2102,28 @@ fn apply_cameras_and_lights(
     }
 }
 
+fn material_required_uv_sets(material: &Material) -> Vec<usize> {
+    let mut out = Vec::new();
+    if material.map_kd.is_some() {
+        out.push(material.map_kd_texcoord_set);
+    }
+    if material.map_normal.is_some() {
+        out.push(material.map_normal_texcoord_set);
+    }
+    if material.map_occlusion.is_some() {
+        out.push(material.map_occlusion_texcoord_set);
+    }
+    if material.map_emissive.is_some() {
+        out.push(material.map_emissive_texcoord_set);
+    }
+    if material.map_metallic_roughness.is_some() {
+        out.push(material.map_metallic_roughness_texcoord_set);
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
 fn build_scene(
     root: &GltfRoot,
     buffers: &[Vec<u8>],
@@ -1943,13 +2146,8 @@ fn build_scene(
                 &default_binding
             };
 
-            let mesh = primitive_to_mesh(
-                root,
-                buffers,
-                p,
-                binding.texcoord_set,
-                binding.material.map_kd.is_some(),
-            )?;
+            let required_uv_sets = material_required_uv_sets(&binding.material);
+            let mesh = primitive_to_mesh(root, buffers, p, &required_uv_sets)?;
             let skinning = primitive_skinning_data(root, buffers, p, mesh.positions.len())?;
 
             prims.push(LoadedPrimitive {
@@ -2690,6 +2888,43 @@ mod tests {
         assert!((mesh_t0.positions[0].y - 2.0).abs() < 1e-5);
         assert!((mesh_t1.positions[0].x + 1.0).abs() < 1e-5);
         assert!((mesh_t1.positions[0].y - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn apply_world_to_mesh_rotates_tangent_basis() {
+        let mut mesh = Mesh::new();
+        mesh.positions = vec![Vec3::new(1.0, 0.0, 0.0)];
+        mesh.normals = vec![Vec3::Z];
+        mesh.tangents = vec![Vec4::new(1.0, 0.0, 0.0, -1.0)];
+
+        let world = Mat4::from_rotation_z(std::f32::consts::FRAC_PI_2);
+        apply_world_to_mesh(&mut mesh, world).unwrap();
+
+        assert!((mesh.positions[0] - Vec3::new(0.0, 1.0, 0.0)).length() < 1e-5);
+        assert!((mesh.normals[0] - Vec3::Z).length() < 1e-5);
+        assert!((mesh.tangents[0].truncate() - Vec3::Y).length() < 1e-5);
+        assert!((mesh.tangents[0].w + 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn skinning_updates_tangent_basis() {
+        let mut mesh = Mesh::new();
+        mesh.positions = vec![Vec3::new(1.0, 0.0, 0.0)];
+        mesh.normals = vec![Vec3::Z];
+        mesh.tangents = vec![Vec4::new(1.0, 0.0, 0.0, -1.0)];
+
+        let skinning = PrimitiveSkinningData {
+            joints: vec![[0, 0, 0, 0]],
+            weights: vec![[1.0, 0.0, 0.0, 0.0]],
+        };
+        let joint_matrices = vec![Mat4::from_rotation_z(std::f32::consts::FRAC_PI_2)];
+
+        skin_mesh_in_place(&mut mesh, &skinning, &joint_matrices).unwrap();
+
+        assert!((mesh.positions[0] - Vec3::new(0.0, 1.0, 0.0)).length() < 1e-5);
+        assert!((mesh.normals[0] - Vec3::Z).length() < 1e-5);
+        assert!((mesh.tangents[0].truncate() - Vec3::Y).length() < 1e-5);
+        assert!((mesh.tangents[0].w + 1.0).abs() < 1e-6);
     }
 
     #[test]

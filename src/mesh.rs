@@ -25,8 +25,19 @@ pub enum MeshValidationError {
         uvs: usize,
         positions: usize,
     },
+    Uvs1LenMismatch {
+        uvs1: usize,
+        positions: usize,
+    },
     ColorsLenMismatch {
         colors: usize,
+        positions: usize,
+    },
+    TangentNotFinite {
+        index: usize,
+    },
+    TangentsLenMismatch {
+        tangents: usize,
         positions: usize,
     },
     TriangleIndexOutOfBounds {
@@ -57,8 +68,20 @@ impl fmt::Display for MeshValidationError {
             MeshValidationError::UvsLenMismatch { uvs, positions } => {
                 write!(f, "uvs_len_mismatch:{uvs}:{positions}")
             }
+            MeshValidationError::Uvs1LenMismatch { uvs1, positions } => {
+                write!(f, "uvs1_len_mismatch:{uvs1}:{positions}")
+            }
             MeshValidationError::ColorsLenMismatch { colors, positions } => {
                 write!(f, "colors_len_mismatch:{colors}:{positions}")
+            }
+            MeshValidationError::TangentNotFinite { index } => {
+                write!(f, "tangent_not_finite:{index}")
+            }
+            MeshValidationError::TangentsLenMismatch {
+                tangents,
+                positions,
+            } => {
+                write!(f, "tangents_len_mismatch:{tangents}:{positions}")
             }
             MeshValidationError::TriangleIndexOutOfBounds {
                 tri,
@@ -79,7 +102,9 @@ pub struct Mesh {
     pub indices: Vec<Tri>,
     pub normals: Vec<Vec3>,
     pub uvs: Vec<Vec2>,
+    pub uvs1: Vec<Vec2>,
     pub colors: Vec<Vec4>,
+    pub tangents: Vec<Vec4>,
 }
 
 impl Mesh {
@@ -107,8 +132,18 @@ impl Mesh {
         self
     }
 
+    pub fn with_uvs1(mut self, uvs1: Vec<Vec2>) -> Self {
+        self.uvs1 = uvs1;
+        self
+    }
+
     pub fn with_colors(mut self, colors: Vec<Vec4>) -> Self {
         self.colors = colors;
+        self
+    }
+
+    pub fn with_tangents(mut self, tangents: Vec<Vec4>) -> Self {
+        self.tangents = tangents;
         self
     }
 
@@ -128,7 +163,9 @@ impl Mesh {
             indices,
             normals: Vec::new(),
             uvs: Vec::new(),
+            uvs1: Vec::new(),
             colors: Vec::new(),
+            tangents: Vec::new(),
         }
     }
 
@@ -164,7 +201,9 @@ impl Mesh {
             indices,
             normals: Vec::new(),
             uvs: Vec::new(),
+            uvs1: Vec::new(),
             colors: Vec::new(),
+            tangents: Vec::new(),
         }
     }
 
@@ -205,6 +244,18 @@ impl Mesh {
             }
         }
 
+        if !self.uvs1.is_empty() && self.uvs1.len() != self.positions.len() {
+            return Err(MeshValidationError::Uvs1LenMismatch {
+                uvs1: self.uvs1.len(),
+                positions: self.positions.len(),
+            });
+        }
+        for (i, uv) in self.uvs1.iter().enumerate() {
+            if !(uv.x.is_finite() && uv.y.is_finite()) {
+                return Err(MeshValidationError::UvNotFinite { index: i });
+            }
+        }
+
         if !self.colors.is_empty() && self.colors.len() != self.positions.len() {
             return Err(MeshValidationError::ColorsLenMismatch {
                 colors: self.colors.len(),
@@ -214,6 +265,18 @@ impl Mesh {
         for (i, c) in self.colors.iter().enumerate() {
             if !(c.x.is_finite() && c.y.is_finite() && c.z.is_finite() && c.w.is_finite()) {
                 return Err(MeshValidationError::ColorNotFinite { index: i });
+            }
+        }
+
+        if !self.tangents.is_empty() && self.tangents.len() != self.positions.len() {
+            return Err(MeshValidationError::TangentsLenMismatch {
+                tangents: self.tangents.len(),
+                positions: self.positions.len(),
+            });
+        }
+        for (i, t) in self.tangents.iter().enumerate() {
+            if !(t.x.is_finite() && t.y.is_finite() && t.z.is_finite() && t.w.is_finite()) {
+                return Err(MeshValidationError::TangentNotFinite { index: i });
             }
         }
 

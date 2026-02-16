@@ -1,4 +1,5 @@
 use crate::{
+    AlphaMode,
     debug::{rgb_for_view, scalar_for_view, DebugView},
     dither::{Dither, DitherMode},
     framegraph::{
@@ -18,6 +19,7 @@ use crate::{
 
 use glam::Vec3;
 use std::cell::RefCell;
+use std::cmp::Ordering;
 use std::time::Instant;
 
 #[derive(Clone, Debug)]
@@ -208,6 +210,83 @@ impl Renderer {
         self.config.width() as f32 / (self.config.height().max(1) as f32)
     }
 
+    fn scene_has_blend(scene: &Scene) -> bool {
+        scene
+            .iter_objects()
+            .any(|(_, mat, _)| mat.alpha_mode == AlphaMode::Blend)
+    }
+
+    fn composite_samples(
+        &self,
+        width: usize,
+        samples: Vec<raster::BlendSample>,
+        rgb: &mut [Vec3],
+        depth: &mut [f32],
+    ) {
+        let mut keyed: Vec<(usize, usize, raster::BlendSample)> = samples
+            .into_iter()
+            .enumerate()
+            .filter_map(|(order, sample)| {
+                let i = sample.y.saturating_mul(width).saturating_add(sample.x);
+                if i >= rgb.len() || i >= depth.len() {
+                    None
+                } else {
+                    Some((i, order, sample))
+                }
+            })
+            .collect();
+        keyed.sort_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then_with(|| b.2.depth.partial_cmp(&a.2.depth).unwrap_or(Ordering::Equal))
+                .then_with(|| a.1.cmp(&b.1))
+        });
+
+        for (i, _order, s) in keyed {
+            let src = rgb_for_view(
+                self.config.debug_view(),
+                self.config.shader(),
+                s.depth,
+                s.view_pos,
+                s.normal,
+                s.kd,
+                s.ks,
+                s.ns,
+                s.ke,
+            );
+            let a = s.alpha.clamp(0.0, 1.0);
+            rgb[i] = src * a + rgb[i] * (1.0 - a);
+            depth[i] = depth[i].min(s.depth);
+        }
+    }
+
+    fn composite_blend_samples(
+        &self,
+        scene: &Scene,
+        gbuf: &GBuffer,
+        rgb: &mut [Vec3],
+        depth: &mut [f32],
+    ) {
+        if !Self::scene_has_blend(scene) {
+            return;
+        }
+        let samples = raster::rasterize_blend_samples_with_camera_aspect(
+            scene,
+            gbuf.width(),
+            gbuf.height(),
+            self.display_aspect(),
+            gbuf.depth_slice(),
+        );
+        self.composite_samples(gbuf.width(), samples, rgb, depth);
+    }
+
+    fn shade_scene_to_rgb_depth(&self, scene: &Scene, gbuf: &GBuffer) -> (Vec<Vec3>, Vec<f32>) {
+        let mut rgb = vec![Vec3::ZERO; gbuf.width().saturating_mul(gbuf.height())];
+        self.shade_gbuffer_to_rgb_buffer(gbuf, &mut rgb);
+        let mut depth = gbuf.depth_slice().to_vec();
+        self.composite_blend_samples(scene, gbuf, &mut rgb, &mut depth);
+        (rgb, depth)
+    }
+
     pub fn render_with_stats(&self, scene: &Scene, target: &mut BufferTarget) -> RenderStats {
         let mut stats = RenderStats::default();
         let total_t0 = Instant::now();
@@ -246,9 +325,17 @@ impl Renderer {
         stats.raster = raster_t0.elapsed();
 
         let map_t0 = Instant::now();
-        match self.config.glyph_mode() {
-            GlyphMode::HalfBlock => self.map_gbuffer_to_buffer_half_block(&gbuf, target),
-            _ => self.map_gbuffer_to_buffer(&gbuf, target),
+        if Self::scene_has_blend(scene) {
+            let (mut rgb, depth) = self.shade_scene_to_rgb_depth(scene, &gbuf);
+            if self.config.post_process().has_any_post_pass() {
+                self.run_post_process_passes(&mut rgb, gbuf.width(), gbuf.height());
+            }
+            self.map_rgb_depth_to_buffer(&rgb, &depth, target);
+        } else {
+            match self.config.glyph_mode() {
+                GlyphMode::HalfBlock => self.map_gbuffer_to_buffer_half_block(&gbuf, target),
+                _ => self.map_gbuffer_to_buffer(&gbuf, target),
+            }
         }
         stats.map = map_t0.elapsed();
 
@@ -273,9 +360,17 @@ impl Renderer {
         } else {
             raster::render_to_gbuffer_with_camera_aspect(scene, &mut gbuf, camera_aspect);
         }
-        match self.config.glyph_mode() {
-            GlyphMode::HalfBlock => self.map_gbuffer_to_buffer_half_block(&gbuf, target),
-            _ => self.map_gbuffer_to_buffer(&gbuf, target),
+        if Self::scene_has_blend(scene) {
+            let (mut rgb, depth) = self.shade_scene_to_rgb_depth(scene, &gbuf);
+            if self.config.post_process().has_any_post_pass() {
+                self.run_post_process_passes(&mut rgb, gbuf.width(), gbuf.height());
+            }
+            self.map_rgb_depth_to_buffer(&rgb, &depth, target);
+        } else {
+            match self.config.glyph_mode() {
+                GlyphMode::HalfBlock => self.map_gbuffer_to_buffer_half_block(&gbuf, target),
+                _ => self.map_gbuffer_to_buffer(&gbuf, target),
+            }
         }
     }
 
@@ -349,6 +444,132 @@ impl Renderer {
                 }
                 FramePassId::RasterizeGBuffer | FramePassId::Shade | FramePassId::ResolveTarget => {
                 }
+            }
+        }
+    }
+
+    fn map_rgb_depth_to_buffer(&self, rgb: &[Vec3], depth: &[f32], target: &mut BufferTarget) {
+        if matches!(self.config.glyph_mode(), GlyphMode::HalfBlock) {
+            self.map_rgb_depth_to_buffer_half_block(rgb, depth, target);
+            return;
+        }
+
+        let width = target.width();
+        let height = target.height();
+        let dither_mode = self.config.dither_mode();
+        let mut dither = Dither::new(dither_mode, width);
+        let temporal_cfg = self.config.temporal();
+        let mut temporal = self.temporal.borrow_mut();
+        if temporal_cfg.enabled {
+            temporal.resize(width, height);
+        }
+        for y in 0..height {
+            for x in 0..width {
+                let i = y * width + x;
+                if i >= depth.len() || i >= rgb.len() {
+                    continue;
+                }
+                let d = depth[i];
+                if !d.is_finite() {
+                    continue;
+                }
+                let rgb_px = rgb[i].clamp(Vec3::ZERO, Vec3::ONE);
+                let shade_scalar = Self::luma(rgb_px).clamp(0.0, 1.0);
+                let mut cell = match self.config.glyph_mode() {
+                    GlyphMode::AsciiRamp(ramp) => {
+                        let bytes = ramp.bytes();
+                        if bytes.is_empty() {
+                            Cell::new(' ', Rgb8::BLACK, Rgb8::BLACK, d)
+                        } else {
+                            let mut t = shade_scalar;
+                            let g = ramp.gamma();
+                            if g != 1.0 {
+                                t = t.powf(g);
+                            }
+                            let idx = if temporal_cfg.enabled {
+                                let mut q = if temporal_cfg.anchored_dither
+                                    && dither_mode == DitherMode::None
+                                {
+                                    TemporalQuantizer::Anchored
+                                } else {
+                                    TemporalQuantizer::Dither(&mut dither)
+                                };
+                                temporal.step_index(x, y, t, bytes.len(), &mut q, temporal_cfg)
+                            } else if dither_mode == DitherMode::None {
+                                if bytes.len() <= 1 {
+                                    0
+                                } else {
+                                    let s = t * (bytes.len() as f32 - 1.0);
+                                    (s + 0.5).floor() as usize
+                                }
+                            } else {
+                                dither.quantize_index(t, bytes.len(), x, y)
+                            };
+                            let idx = idx.min(bytes.len().saturating_sub(1));
+                            Cell::new(bytes[idx] as char, Rgb8::BLACK, Rgb8::BLACK, d)
+                        }
+                    }
+                    GlyphMode::HalfBlock => self
+                        .config
+                        .glyph_mode()
+                        .cell_from_scalar(shade_scalar, d),
+                };
+                cell.fg = Self::to_u8_rgb(rgb_px);
+                cell.bg = Rgb8::BLACK;
+                let _ = target.set(x, y, cell);
+            }
+            dither.finish_row();
+        }
+    }
+
+    fn map_rgb_depth_to_buffer_half_block(
+        &self,
+        rgb: &[Vec3],
+        depth: &[f32],
+        target: &mut BufferTarget,
+    ) {
+        let width = target.width();
+        let gbuf_height = depth.len().checked_div(width).unwrap_or(0);
+        for y in 0..target.height() {
+            let y0 = y.saturating_mul(2);
+            let y1 = y0 + 1;
+            for x in 0..width {
+                let i0 = y0 * width + x;
+                let i1 = y1 * width + x;
+                let d0 = if y0 < gbuf_height { depth[i0] } else { f32::INFINITY };
+                let d1 = if y1 < gbuf_height { depth[i1] } else { f32::INFINITY };
+                let p0_ok = d0.is_finite();
+                let p1_ok = d1.is_finite();
+                if p0_ok && p1_ok {
+                    let rgb0 = Self::to_u8_rgb(rgb[i0]);
+                    let rgb1 = Self::to_u8_rgb(rgb[i1]);
+                    let _ = target.set(x, y, Cell::new('▀', rgb0, rgb1, d0.min(d1)));
+                } else if p0_ok {
+                    let rgb0 = Self::to_u8_rgb(rgb[i0]);
+                    let _ = target.set(x, y, Cell::new('▀', rgb0, Rgb8::BLACK, d0));
+                } else if p1_ok {
+                    let rgb1 = Self::to_u8_rgb(rgb[i1]);
+                    let _ = target.set(x, y, Cell::new('▄', rgb1, Rgb8::BLACK, d1));
+                } else {
+                    let _ = target.set(x, y, Cell::new(' ', Rgb8::BLACK, Rgb8::BLACK, f32::INFINITY));
+                }
+            }
+        }
+    }
+
+    fn map_rgb_depth_to_image(&self, rgb: &[Vec3], depth: &[f32], target: &mut ImageTarget) {
+        let width = target.width();
+        for y in 0..target.height() {
+            for x in 0..target.width() {
+                let i = y * width + x;
+                if i >= depth.len() || i >= rgb.len() {
+                    continue;
+                }
+                if !depth[i].is_finite() {
+                    continue;
+                }
+                let c = Self::to_u8_rgb(rgb[i]);
+                let _ = target.set_rgba(x, y, c.r, c.g, c.b, 255);
             }
         }
     }
@@ -676,7 +897,15 @@ impl Renderer {
         } else {
             raster::render_to_gbuffer_with_camera_aspect(scene, &mut gbuf, camera_aspect);
         }
-        self.map_gbuffer_to_image(&gbuf, target);
+        if Self::scene_has_blend(scene) {
+            let (mut rgb, depth) = self.shade_scene_to_rgb_depth(scene, &gbuf);
+            if self.config.post_process().has_any_post_pass() {
+                self.run_post_process_passes(&mut rgb, gbuf.width(), gbuf.height());
+            }
+            self.map_rgb_depth_to_image(&rgb, &depth, target);
+        } else {
+            self.map_gbuffer_to_image(&gbuf, target);
+        }
     }
 
     pub fn render_image_with_stats(&self, scene: &Scene, target: &mut ImageTarget) -> RenderStats {
@@ -712,7 +941,15 @@ impl Renderer {
         stats.raster = t_raster.elapsed();
 
         let t_map = Instant::now();
-        self.map_gbuffer_to_image(&gbuf, target);
+        if Self::scene_has_blend(scene) {
+            let (mut rgb, depth) = self.shade_scene_to_rgb_depth(scene, &gbuf);
+            if self.config.post_process().has_any_post_pass() {
+                self.run_post_process_passes(&mut rgb, gbuf.width(), gbuf.height());
+            }
+            self.map_rgb_depth_to_image(&rgb, &depth, target);
+        } else {
+            self.map_gbuffer_to_image(&gbuf, target);
+        }
         stats.map = t_map.elapsed();
 
         stats.total = t_total.elapsed();
@@ -877,6 +1114,52 @@ mod tests {
         let stats = renderer.render_with_stats(&scene, &mut target);
         assert_eq!(stats.width, 64);
         assert_eq!(stats.height, 64);
+    }
+
+    #[test]
+    fn blend_samples_are_composited_back_to_front_per_pixel() {
+        let renderer = Renderer::new(
+            RendererConfig::default()
+                .with_size(1, 1)
+                .with_debug_view(DebugView::Albedo)
+                .with_shader_id(ShaderId::Unlit),
+        );
+        let mut rgb = vec![Vec3::ZERO];
+        let mut depth = vec![f32::INFINITY];
+        let samples = vec![
+            crate::raster::BlendSample {
+                x: 0,
+                y: 0,
+                depth: -0.5,
+                view_pos: Vec3::ZERO,
+                normal: Vec3::Z,
+                kd: Vec3::new(1.0, 0.0, 0.0),
+                ks: Vec3::ZERO,
+                ns: 0.0,
+                ke: Vec3::ZERO,
+                alpha: 0.5,
+            },
+            crate::raster::BlendSample {
+                x: 0,
+                y: 0,
+                depth: 0.5,
+                view_pos: Vec3::ZERO,
+                normal: Vec3::Z,
+                kd: Vec3::new(0.0, 0.0, 1.0),
+                ks: Vec3::ZERO,
+                ns: 0.0,
+                ke: Vec3::ZERO,
+                alpha: 0.5,
+            },
+        ];
+
+        renderer.composite_samples(1, samples, &mut rgb, &mut depth);
+
+        let expected = Vec3::new(0.5, 0.0, 0.25);
+        assert!((rgb[0].x - expected.x).abs() < 1e-6);
+        assert!((rgb[0].y - expected.y).abs() < 1e-6);
+        assert!((rgb[0].z - expected.z).abs() < 1e-6);
+        assert!((depth[0] + 0.5).abs() < 1e-6);
     }
 
     #[test]
