@@ -1,17 +1,14 @@
 use ascii3d::{
     prelude::{
-        DebugView, DitherMode, Light, Material, Mesh, Quat, Renderer, RendererConfig, Scene, Transform, Vec3,
+        DebugView, DitherMode, Light, Material, Mesh, Quat, Renderer, RendererConfig, Scene,
+        Transform, Vec3,
     },
     targets::ImageTarget,
 };
 
 fn main() {
     let mut scene = Scene::new();
-    scene.add_light(Light::directional(
-        Vec3::new(0.3, 0.7, 1.0),
-        Vec3::ONE,
-        1.0,
-    ));
+    scene.add_light(Light::directional(Vec3::new(0.3, 0.7, 1.0), Vec3::ONE, 1.0));
 
     let mut cube_mat = Material::new(Vec3::new(0.7, 0.85, 1.0));
     cube_mat.ks = Vec3::splat(0.4);

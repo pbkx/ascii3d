@@ -1,10 +1,5 @@
 use crate::texture::Texture;
-use std::{
-    error::Error,
-    fmt,
-    fs,
-    path::Path,
-};
+use std::{error::Error, fmt, fs, path::Path};
 
 #[derive(Clone, Debug)]
 pub enum TextureIoError {

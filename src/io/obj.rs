@@ -3,8 +3,7 @@ use glam::{Vec2, Vec3};
 use std::{
     collections::HashMap,
     error::Error,
-    fmt,
-    fs,
+    fmt, fs,
     path::{Path, PathBuf},
 };
 
@@ -270,7 +269,6 @@ fn build_mesh(
         }
     }
 
-
     if mesh.normals.is_empty() {
         mesh.ensure_normals();
     }
@@ -339,7 +337,9 @@ fn resolve_mtl_path(obj_path: &Path, mtl_name: &str) -> PathBuf {
     base.join(mtl_name)
 }
 
-pub fn load_obj_with_mtl_mesh_materials(path: impl AsRef<Path>) -> Result<(Mesh, Vec<Material>), ObjError> {
+pub fn load_obj_with_mtl_mesh_materials(
+    path: impl AsRef<Path>,
+) -> Result<(Mesh, Vec<Material>), ObjError> {
     let loaded = load_obj_with_mtl(path)?;
     Ok((loaded.mesh, loaded.materials))
 }

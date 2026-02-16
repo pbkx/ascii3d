@@ -1,11 +1,6 @@
 use crate::Mesh;
 use glam::Vec3;
-use std::{
-    error::Error,
-    fmt,
-    fs,
-    path::Path,
-};
+use std::{error::Error, fmt, fs, path::Path};
 
 #[derive(Clone, Debug)]
 pub enum StlError {
@@ -63,9 +58,21 @@ fn parse_binary(buf: &[u8]) -> Result<Mesh, StlError> {
         let nz = read_f32_le(buf, &mut off)?;
         let n = Vec3::new(nx, ny, nz);
 
-        let v0 = Vec3::new(read_f32_le(buf, &mut off)?, read_f32_le(buf, &mut off)?, read_f32_le(buf, &mut off)?);
-        let v1 = Vec3::new(read_f32_le(buf, &mut off)?, read_f32_le(buf, &mut off)?, read_f32_le(buf, &mut off)?);
-        let v2 = Vec3::new(read_f32_le(buf, &mut off)?, read_f32_le(buf, &mut off)?, read_f32_le(buf, &mut off)?);
+        let v0 = Vec3::new(
+            read_f32_le(buf, &mut off)?,
+            read_f32_le(buf, &mut off)?,
+            read_f32_le(buf, &mut off)?,
+        );
+        let v1 = Vec3::new(
+            read_f32_le(buf, &mut off)?,
+            read_f32_le(buf, &mut off)?,
+            read_f32_le(buf, &mut off)?,
+        );
+        let v2 = Vec3::new(
+            read_f32_le(buf, &mut off)?,
+            read_f32_le(buf, &mut off)?,
+            read_f32_le(buf, &mut off)?,
+        );
 
         if off + 2 > buf.len() {
             return Err(StlError::UnexpectedEof);
@@ -103,9 +110,15 @@ fn parse_ascii(src: &str) -> Result<Mesh, StlError> {
         }
         let mut it = line.split_whitespace();
         let _ = it.next();
-        let Some(x) = it.next() else { return Err(StlError::InvalidFormat); };
-        let Some(y) = it.next() else { return Err(StlError::InvalidFormat); };
-        let Some(z) = it.next() else { return Err(StlError::InvalidFormat); };
+        let Some(x) = it.next() else {
+            return Err(StlError::InvalidFormat);
+        };
+        let Some(y) = it.next() else {
+            return Err(StlError::InvalidFormat);
+        };
+        let Some(z) = it.next() else {
+            return Err(StlError::InvalidFormat);
+        };
         let x = x.parse::<f32>().map_err(|_| StlError::InvalidFormat)?;
         let y = y.parse::<f32>().map_err(|_| StlError::InvalidFormat)?;
         let z = z.parse::<f32>().map_err(|_| StlError::InvalidFormat)?;

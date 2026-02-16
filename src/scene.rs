@@ -1,5 +1,5 @@
-use crate::{Camera, Light, Material, Mesh, Transform};
 use crate::texture::{Texture, TextureHandle};
+use crate::{Camera, Light, Material, Mesh, Transform};
 
 #[derive(Clone, Debug)]
 pub struct Scene {

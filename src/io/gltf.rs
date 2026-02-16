@@ -1,15 +1,14 @@
+use crate::texture::{Texture, TextureHandle};
 use crate::{
     io::texture::{load_texture_rgba8_from_bytes, TextureIoError},
     Material, Mesh, Scene, Transform,
 };
-use crate::texture::{Texture, TextureHandle};
 use glam::{Mat3, Mat4, Quat, Vec2, Vec3, Vec4};
 use serde::Deserialize;
 use std::{
     collections::HashMap,
     error::Error,
-    fmt,
-    fs,
+    fmt, fs,
     path::{Path, PathBuf},
 };
 
@@ -327,16 +326,26 @@ fn accessor_layout<'a>(
     buffers: &'a [Vec<u8>],
     accessor_index: usize,
 ) -> Result<AccessorLayout<'a>, GltfError> {
-    let accessor = root.accessors.get(accessor_index).ok_or(GltfError::InvalidIndex)?;
+    let accessor = root
+        .accessors
+        .get(accessor_index)
+        .ok_or(GltfError::InvalidIndex)?;
     if accessor.sparse.is_some() {
         return Err(GltfError::UnsupportedAccessor);
     }
     let view_index = accessor.buffer_view.ok_or(GltfError::UnsupportedAccessor)?;
-    let view = root.buffer_views.get(view_index).ok_or(GltfError::InvalidIndex)?;
-    let data = buffers.get(view.buffer).ok_or(GltfError::InvalidIndex)?.as_slice();
+    let view = root
+        .buffer_views
+        .get(view_index)
+        .ok_or(GltfError::InvalidIndex)?;
+    let data = buffers
+        .get(view.buffer)
+        .ok_or(GltfError::InvalidIndex)?
+        .as_slice();
 
     let components = accessor_components(&accessor.kind).ok_or(GltfError::UnsupportedAccessor)?;
-    let component_size = component_size(accessor.component_type).ok_or(GltfError::UnsupportedAccessor)?;
+    let component_size =
+        component_size(accessor.component_type).ok_or(GltfError::UnsupportedAccessor)?;
     let elem_size = checked_mul(components, component_size)?;
     let stride = view.byte_stride.unwrap_or(elem_size);
     if stride < elem_size {
@@ -638,7 +647,10 @@ fn primitive_to_mesh(
         }
     }
 
-    let pos_accessor = *primitive.attributes.get("POSITION").ok_or(GltfError::MissingAttribute)?;
+    let pos_accessor = *primitive
+        .attributes
+        .get("POSITION")
+        .ok_or(GltfError::MissingAttribute)?;
     let positions = read_accessor_vec3(root, buffers, pos_accessor)?;
 
     let normals = if let Some(n) = primitive.attributes.get("NORMAL") {
@@ -795,9 +807,19 @@ fn linearize_base_color_texture(tex: &mut Texture) {
     }
 }
 
-fn view_bytes<'a>(root: &'a GltfRoot, buffers: &'a [Vec<u8>], view_index: usize) -> Result<&'a [u8], GltfError> {
-    let view = root.buffer_views.get(view_index).ok_or(GltfError::InvalidIndex)?;
-    let data = buffers.get(view.buffer).ok_or(GltfError::InvalidIndex)?.as_slice();
+fn view_bytes<'a>(
+    root: &'a GltfRoot,
+    buffers: &'a [Vec<u8>],
+    view_index: usize,
+) -> Result<&'a [u8], GltfError> {
+    let view = root
+        .buffer_views
+        .get(view_index)
+        .ok_or(GltfError::InvalidIndex)?;
+    let data = buffers
+        .get(view.buffer)
+        .ok_or(GltfError::InvalidIndex)?
+        .as_slice();
     let start = view.byte_offset;
     let end = checked_add(start, view.byte_length)?;
     if end > data.len() {
@@ -844,7 +866,10 @@ fn load_image_bytes(
     base_dir: Option<&Path>,
     image_index: usize,
 ) -> Result<Vec<u8>, GltfError> {
-    let image = root.images.get(image_index).ok_or(GltfError::InvalidIndex)?;
+    let image = root
+        .images
+        .get(image_index)
+        .ok_or(GltfError::InvalidIndex)?;
 
     if let Some(uri) = &image.uri {
         if uri.starts_with("data:") {
@@ -865,7 +890,9 @@ fn load_image_bytes(
 fn map_texture_io_error(err: TextureIoError) -> GltfError {
     match err {
         TextureIoError::ImageFeatureDisabled => GltfError::ImageFeatureDisabled,
-        TextureIoError::Io | TextureIoError::Decode | TextureIoError::Invalid => GltfError::TextureIo,
+        TextureIoError::Io | TextureIoError::Decode | TextureIoError::Invalid => {
+            GltfError::TextureIo
+        }
     }
 }
 
@@ -885,7 +912,10 @@ fn ensure_base_color_texture_handle(
         return Ok(handle);
     }
 
-    let tex_def = root.textures.get(texture_index).ok_or(GltfError::InvalidIndex)?;
+    let tex_def = root
+        .textures
+        .get(texture_index)
+        .ok_or(GltfError::InvalidIndex)?;
     let image_index = tex_def.source.ok_or(GltfError::MissingImageSource)?;
     let bytes = load_image_bytes(root, buffers, base_dir, image_index)?;
     let mut texture = load_texture_rgba8_from_bytes(&bytes).map_err(map_texture_io_error)?;
@@ -1035,7 +1065,9 @@ fn skin_joint_matrices(
     skin: &LoadedSkin,
     world_matrices: &[Mat4],
 ) -> Result<Vec<Mat4>, GltfError> {
-    let node_world = *world_matrices.get(node_index).ok_or(GltfError::InvalidIndex)?;
+    let node_world = *world_matrices
+        .get(node_index)
+        .ok_or(GltfError::InvalidIndex)?;
     let inv_node_world = node_world.inverse();
     if !inv_node_world.is_finite() {
         return Err(GltfError::InvalidTransform);
@@ -1043,7 +1075,9 @@ fn skin_joint_matrices(
 
     let mut out = Vec::with_capacity(skin.joints.len());
     for (joint_slot, &joint_node) in skin.joints.iter().enumerate() {
-        let joint_world = *world_matrices.get(joint_node).ok_or(GltfError::InvalidIndex)?;
+        let joint_world = *world_matrices
+            .get(joint_node)
+            .ok_or(GltfError::InvalidIndex)?;
         let ibm = *skin
             .inverse_bind_matrices
             .get(joint_slot)
@@ -1058,7 +1092,9 @@ fn skin_mesh_in_place(
     skinning: &PrimitiveSkinningData,
     joint_matrices: &[Mat4],
 ) -> Result<(), GltfError> {
-    if mesh.positions.len() != skinning.joints.len() || mesh.positions.len() != skinning.weights.len() {
+    if mesh.positions.len() != skinning.joints.len()
+        || mesh.positions.len() != skinning.weights.len()
+    {
         return Err(GltfError::InvalidAnimation);
     }
     if mesh.normals.len() != mesh.positions.len() {
@@ -1105,7 +1141,9 @@ fn skin_mesh_in_place(
                 continue;
             }
             let joint_slot = usize::from(joints[k]);
-            let jm = *joint_matrices.get(joint_slot).ok_or(GltfError::InvalidIndex)?;
+            let jm = *joint_matrices
+                .get(joint_slot)
+                .ok_or(GltfError::InvalidIndex)?;
             let nm = *normal_mats.get(joint_slot).ok_or(GltfError::InvalidIndex)?;
             out_pos += (jm * src_pos) * w;
             out_nrm += (nm * src_nrm) * w;
@@ -1218,7 +1256,10 @@ fn sample_vec3_channel(
             if times.len() < 2 {
                 return Err(GltfError::InvalidAnimation);
             }
-            let need = times.len().checked_mul(3).ok_or(GltfError::InvalidAnimation)?;
+            let need = times
+                .len()
+                .checked_mul(3)
+                .ok_or(GltfError::InvalidAnimation)?;
             if values.len() != need {
                 return Err(GltfError::InvalidAnimation);
             }
@@ -1283,7 +1324,10 @@ fn sample_quat_channel(
             if times.len() < 2 {
                 return Err(GltfError::InvalidAnimation);
             }
-            let need = times.len().checked_mul(3).ok_or(GltfError::InvalidAnimation)?;
+            let need = times
+                .len()
+                .checked_mul(3)
+                .ok_or(GltfError::InvalidAnimation)?;
             if values.len() != need {
                 return Err(GltfError::InvalidAnimation);
             }
@@ -1316,8 +1360,15 @@ fn sample_animation_locals(
     animation_index: usize,
     time_seconds: f32,
 ) -> Result<Vec<Mat4>, GltfError> {
-    let anim = root.animations.get(animation_index).ok_or(GltfError::InvalidIndex)?;
-    let time = if time_seconds.is_finite() { time_seconds } else { 0.0 };
+    let anim = root
+        .animations
+        .get(animation_index)
+        .ok_or(GltfError::InvalidIndex)?;
+    let time = if time_seconds.is_finite() {
+        time_seconds
+    } else {
+        0.0
+    };
 
     let mut translations = Vec::with_capacity(root.nodes.len());
     let mut rotations = Vec::with_capacity(root.nodes.len());
@@ -1330,7 +1381,10 @@ fn sample_animation_locals(
     }
 
     for channel in &anim.channels {
-        let sampler = anim.samplers.get(channel.sampler).ok_or(GltfError::InvalidIndex)?;
+        let sampler = anim
+            .samplers
+            .get(channel.sampler)
+            .ok_or(GltfError::InvalidIndex)?;
         let node_index = channel.target.node.ok_or(GltfError::InvalidAnimation)?;
         if node_index >= root.nodes.len() {
             return Err(GltfError::InvalidIndex);
@@ -1349,11 +1403,13 @@ fn sample_animation_locals(
             }
             "scale" => {
                 let output = read_accessor_vec3(root, buffers, sampler.output)?;
-                scales[node_index] = sample_vec3_channel(&input_times, &output, interpolation, time)?;
+                scales[node_index] =
+                    sample_vec3_channel(&input_times, &output, interpolation, time)?;
             }
             "rotation" => {
                 let output = read_accessor_vec4(root, buffers, sampler.output)?;
-                rotations[node_index] = sample_quat_channel(&input_times, &output, interpolation, time)?;
+                rotations[node_index] =
+                    sample_quat_channel(&input_times, &output, interpolation, time)?;
             }
             _ => return Err(GltfError::UnsupportedAnimationPath),
         }
@@ -1386,7 +1442,9 @@ fn build_scene(
         let mut prims = Vec::with_capacity(mesh.primitives.len());
         for p in &mesh.primitives {
             let binding = if let Some(material_index) = p.material {
-                materials.get(material_index).ok_or(GltfError::InvalidIndex)?
+                materials
+                    .get(material_index)
+                    .ok_or(GltfError::InvalidIndex)?
             } else {
                 &default_binding
             };
@@ -1447,11 +1505,15 @@ fn build_scene(
         let world = parent_world * local;
 
         if let Some(mesh_index) = node.mesh {
-            let primitives = per_mesh_primitives.get(mesh_index).ok_or(GltfError::InvalidIndex)?;
+            let primitives = per_mesh_primitives
+                .get(mesh_index)
+                .ok_or(GltfError::InvalidIndex)?;
             let xf = world_to_transform(world)?;
 
             if let Some(skin_index) = node.skin {
-                let skin = loaded_skins.get(skin_index).ok_or(GltfError::InvalidIndex)?;
+                let skin = loaded_skins
+                    .get(skin_index)
+                    .ok_or(GltfError::InvalidIndex)?;
                 let joint_matrices = skin_joint_matrices(node_index, skin, world_matrices)?;
                 for prim in primitives {
                     let skinning = prim.skinning.as_ref().ok_or(GltfError::MissingAttribute)?;
@@ -1502,7 +1564,10 @@ fn build_scene(
     }
 
     let scene_index = root.scene.unwrap_or(0);
-    let selected = root.scenes.get(scene_index).ok_or(GltfError::InvalidIndex)?;
+    let selected = root
+        .scenes
+        .get(scene_index)
+        .ok_or(GltfError::InvalidIndex)?;
     for &node in &selected.nodes {
         walk(
             node,
@@ -1569,11 +1634,7 @@ pub fn load_gltf_at_time(
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
-    parse_and_load(
-        &src,
-        Some(&base_dir),
-        Some((animation_index, time_seconds)),
-    )
+    parse_and_load(&src, Some(&base_dir), Some((animation_index, time_seconds)))
 }
 
 pub fn load_gltf_str(src: &str) -> Result<Scene, GltfError> {
@@ -1674,7 +1735,9 @@ mod tests {
         {
             let dyn_img = image::DynamicImage::ImageRgba8(image_rgba);
             let mut cursor = std::io::Cursor::new(&mut png_bytes);
-            dyn_img.write_to(&mut cursor, image::ImageFormat::Png).unwrap();
+            dyn_img
+                .write_to(&mut cursor, image::ImageFormat::Png)
+                .unwrap();
         }
 
         use base64::Engine as _;

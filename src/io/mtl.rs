@@ -1,10 +1,6 @@
 use crate::Material;
 use glam::Vec3;
-use std::{
-    collections::HashMap,
-    error::Error,
-    fmt,
-};
+use std::{collections::HashMap, error::Error, fmt};
 
 #[derive(Clone, Debug)]
 pub struct MtlLibrary {
@@ -74,7 +70,10 @@ pub fn parse_mtl(src: &str) -> Result<MtlLibrary, MtlError> {
 
     for line in src.lines() {
         let line = line.trim();
-        let line = line.trim_start_matches("\\t").trim_start_matches("	").trim();
+        let line = line
+            .trim_start_matches("\\t")
+            .trim_start_matches("	")
+            .trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }

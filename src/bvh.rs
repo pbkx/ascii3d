@@ -208,7 +208,8 @@ impl MeshBvh {
     pub fn build(mesh: &Mesh) -> Self {
         let tri_count = mesh.indices.len();
         let mut tri_indices: Vec<u32> = (0..tri_count as u32).collect();
-        let mut nodes: Vec<BvhNode> = Vec::with_capacity(tri_count.saturating_mul(2).saturating_add(1));
+        let mut nodes: Vec<BvhNode> =
+            Vec::with_capacity(tri_count.saturating_mul(2).saturating_add(1));
 
         let root = build_node(mesh, &mut tri_indices, 0, tri_count, &mut nodes) as u32;
 
@@ -223,7 +224,13 @@ impl MeshBvh {
         self.intersect_range(mesh, ray, 0.0, f32::INFINITY)
     }
 
-    pub fn intersect_range(&self, mesh: &Mesh, ray: &Ray, t_min: f32, t_max: f32) -> Option<MeshHit> {
+    pub fn intersect_range(
+        &self,
+        mesh: &Mesh,
+        ray: &Ray,
+        t_min: f32,
+        t_max: f32,
+    ) -> Option<MeshHit> {
         if self.nodes.is_empty() || mesh.indices.is_empty() {
             return None;
         }
@@ -396,7 +403,13 @@ fn tri_centroid(mesh: &Mesh, tri_idx: u32) -> Vec3 {
     tri_bounds(mesh, tri_idx).centroid()
 }
 
-fn build_node(mesh: &Mesh, tri_indices: &mut [u32], start: usize, end: usize, nodes: &mut Vec<BvhNode>) -> usize {
+fn build_node(
+    mesh: &Mesh,
+    tri_indices: &mut [u32],
+    start: usize,
+    end: usize,
+    nodes: &mut Vec<BvhNode>,
+) -> usize {
     let mut bounds = Aabb::empty();
     for i in start..end {
         let b = tri_bounds(mesh, tri_indices[i]);
@@ -482,7 +495,13 @@ impl SceneBvh {
                 let pos_world = world_from_local.transform_point3(hit_local.position);
                 let t_world = (pos_world - ray_world.origin).dot(ray_world.dir);
 
-                if t_world.is_finite() && t_world >= 0.0 && (t_world < best_t || (t_world == best_t && object_index < best.as_ref().map(|h| h.object_index).unwrap_or(usize::MAX))) {
+                if t_world.is_finite()
+                    && t_world >= 0.0
+                    && (t_world < best_t
+                        || (t_world == best_t
+                            && object_index
+                                < best.as_ref().map(|h| h.object_index).unwrap_or(usize::MAX)))
+                {
                     let mut n_world = normal_mat.transform_vector3(hit_local.normal);
                     if n_world.length_squared() > 0.0 {
                         n_world = n_world.normalize();
@@ -521,7 +540,11 @@ fn transform_ray_to_local(ray: &Ray, xf: &Transform) -> (Ray, Mat4, Mat4) {
 
     let normal_mat = local_from_world.transpose();
 
-    (Ray::new(origin_local, dir_local), world_from_local, normal_mat)
+    (
+        Ray::new(origin_local, dir_local),
+        world_from_local,
+        normal_mat,
+    )
 }
 
 #[cfg(test)]

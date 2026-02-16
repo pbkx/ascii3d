@@ -32,7 +32,10 @@ impl Default for Material {
 
 impl Material {
     pub fn new(kd: Vec3) -> Self {
-        Self { kd, ..Self::default() }
+        Self {
+            kd,
+            ..Self::default()
+        }
     }
 
     pub fn with_emissive(mut self, ke: Vec3) -> Self {

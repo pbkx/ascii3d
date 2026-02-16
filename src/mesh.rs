@@ -5,12 +5,28 @@ pub type Tri = [u32; 3];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MeshValidationError {
-    PositionNotFinite { index: usize },
-    NormalNotFinite { index: usize },
-    UvNotFinite { index: usize },
-    NormalsLenMismatch { normals: usize, positions: usize },
-    UvsLenMismatch { uvs: usize, positions: usize },
-    TriangleIndexOutOfBounds { tri: usize, index: u32, vertex_count: usize },
+    PositionNotFinite {
+        index: usize,
+    },
+    NormalNotFinite {
+        index: usize,
+    },
+    UvNotFinite {
+        index: usize,
+    },
+    NormalsLenMismatch {
+        normals: usize,
+        positions: usize,
+    },
+    UvsLenMismatch {
+        uvs: usize,
+        positions: usize,
+    },
+    TriangleIndexOutOfBounds {
+        tri: usize,
+        index: u32,
+        vertex_count: usize,
+    },
 }
 
 impl fmt::Display for MeshValidationError {
@@ -31,7 +47,11 @@ impl fmt::Display for MeshValidationError {
             MeshValidationError::UvsLenMismatch { uvs, positions } => {
                 write!(f, "uvs_len_mismatch:{uvs}:{positions}")
             }
-            MeshValidationError::TriangleIndexOutOfBounds { tri, index, vertex_count } => {
+            MeshValidationError::TriangleIndexOutOfBounds {
+                tri,
+                index,
+                vertex_count,
+            } => {
                 write!(f, "tri_oob:{tri}:{index}:{vertex_count}")
             }
         }
@@ -127,11 +147,9 @@ impl Mesh {
         }
     }
 
-
-
-pub fn build_bvh(&self) -> crate::bvh::MeshBvh {
-    crate::bvh::MeshBvh::build(self)
-}
+    pub fn build_bvh(&self) -> crate::bvh::MeshBvh {
+        crate::bvh::MeshBvh::build(self)
+    }
 
     pub fn validate_basic(&self) -> Result<(), MeshValidationError> {
         for (i, p) in self.positions.iter().enumerate() {
@@ -221,7 +239,10 @@ pub fn build_bvh(&self) -> crate::bvh::MeshBvh {
         for t in &self.indices {
             let [i0, i1, i2] = *t;
             let (i0u, i1u, i2u) = (i0 as usize, i1 as usize, i2 as usize);
-            if i0u >= self.positions.len() || i1u >= self.positions.len() || i2u >= self.positions.len() {
+            if i0u >= self.positions.len()
+                || i1u >= self.positions.len()
+                || i2u >= self.positions.len()
+            {
                 continue;
             }
 

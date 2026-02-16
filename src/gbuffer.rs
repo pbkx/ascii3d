@@ -38,7 +38,9 @@ pub(crate) struct GBufferSlicesMut<'a> {
 
 impl GBuffer {
     pub fn new(width: usize, height: usize) -> Self {
-        let n = width.checked_mul(height).unwrap_or_else(|| panic!("GBuffer size overflow: {}x{}", width, height));
+        let n = width
+            .checked_mul(height)
+            .unwrap_or_else(|| panic!("GBuffer size overflow: {}x{}", width, height));
         let mut g = Self {
             width,
             height,
@@ -64,7 +66,10 @@ impl GBuffer {
     }
 
     pub fn clear(&mut self) {
-        let n = self.width.checked_mul(self.height).expect("GBuffer size overflow");
+        let n = self
+            .width
+            .checked_mul(self.height)
+            .expect("GBuffer size overflow");
         self.depth.fill(f32::INFINITY);
         self.nx.fill(0.0);
         self.ny.fill(0.0);

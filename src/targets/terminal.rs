@@ -1,7 +1,4 @@
-use crate::{
-    targets::buffer::BufferTarget,
-    types::Rgb8,
-};
+use crate::{targets::buffer::BufferTarget, types::Rgb8};
 use crossterm::{
     cursor,
     style::{self, Color},
@@ -93,7 +90,6 @@ impl std::str::FromStr for ColorMode {
     }
 }
 
-
 #[derive(Clone, Copy, Debug)]
 pub struct TerminalPresenterConfig {
     pub color_mode: ColorMode,
@@ -172,7 +168,8 @@ impl TerminalPresenter {
         self.width = width;
         self.height = height;
         self.prev.clear();
-        self.prev.resize(width.saturating_mul(height), PrevCell::empty());
+        self.prev
+            .resize(width.saturating_mul(height), PrevCell::empty());
         self.first = true;
         self.cur_style = None;
     }
@@ -337,7 +334,9 @@ fn resolve_mode(mode: ColorMode) -> ResolvedMode {
 }
 
 fn detect_mode() -> ResolvedMode {
-    let colorterm = std::env::var("COLORTERM").unwrap_or_default().to_lowercase();
+    let colorterm = std::env::var("COLORTERM")
+        .unwrap_or_default()
+        .to_lowercase();
     if colorterm.contains("truecolor") || colorterm.contains("24bit") {
         return ResolvedMode::Truecolor;
     }
@@ -373,7 +372,11 @@ fn pack_rgb(c: Rgb8) -> u32 {
 }
 
 fn unpack_rgb(v: u32) -> Rgb8 {
-    Rgb8::new(((v >> 16) & 255) as u8, ((v >> 8) & 255) as u8, (v & 255) as u8)
+    Rgb8::new(
+        ((v >> 16) & 255) as u8,
+        ((v >> 8) & 255) as u8,
+        (v & 255) as u8,
+    )
 }
 
 fn quantize_ansi256(c: Rgb8) -> u8 {
@@ -488,7 +491,10 @@ mod tests {
     #[test]
     fn color_mode_parse_and_display() {
         assert_eq!("auto".parse::<ColorMode>().unwrap(), ColorMode::Auto);
-        assert_eq!("TRUECOLOR".parse::<ColorMode>().unwrap(), ColorMode::Truecolor);
+        assert_eq!(
+            "TRUECOLOR".parse::<ColorMode>().unwrap(),
+            ColorMode::Truecolor
+        );
         assert_eq!("ansi-256".parse::<ColorMode>().unwrap(), ColorMode::Ansi256);
         assert_eq!("mono".parse::<ColorMode>().unwrap(), ColorMode::Mono);
         assert!("nope".parse::<ColorMode>().is_err());

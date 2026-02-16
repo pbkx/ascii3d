@@ -10,7 +10,15 @@ pub trait Shader {
     fn shade_scalar(&self, depth: f32, normal: Vec3, kd: Vec3, ks: Vec3, ns: f32, ke: Vec3) -> f32;
     fn shade_rgb(&self, depth: f32, normal: Vec3, kd: Vec3, ks: Vec3, ns: f32, ke: Vec3) -> Vec3;
 
-    fn shade(&self, depth: f32, normal: Vec3, kd: Vec3, ks: Vec3, ns: f32, ke: Vec3) -> ShadeSample {
+    fn shade(
+        &self,
+        depth: f32,
+        normal: Vec3,
+        kd: Vec3,
+        ks: Vec3,
+        ns: f32,
+        ke: Vec3,
+    ) -> ShadeSample {
         ShadeSample {
             intensity: self.shade_scalar(depth, normal, kd, ks, ns, ke),
             rgb: self.shade_rgb(depth, normal, kd, ks, ns, ke),
@@ -38,15 +46,24 @@ pub struct LambertShader {
 
 impl Default for LambertShader {
     fn default() -> Self {
-        
-        
         let light_dir = Vec3::new(0.2, 0.4, 1.0).normalize();
-        LambertShader { light_dir, ambient: 0.15 }
+        LambertShader {
+            light_dir,
+            ambient: 0.15,
+        }
     }
 }
 
 impl Shader for LambertShader {
-    fn shade_scalar(&self, _depth: f32, normal: Vec3, _kd: Vec3, ks: Vec3, ns: f32, ke: Vec3) -> f32 {
+    fn shade_scalar(
+        &self,
+        _depth: f32,
+        normal: Vec3,
+        _kd: Vec3,
+        ks: Vec3,
+        ns: f32,
+        ke: Vec3,
+    ) -> f32 {
         let n = normal.normalize_or_zero();
         let l = self.light_dir.normalize_or_zero();
         let ndotl = n.dot(l).clamp(0.0, 1.0);
@@ -100,11 +117,27 @@ impl Shader for LambertShader {
 pub struct UnlitShader;
 
 impl Shader for UnlitShader {
-    fn shade_scalar(&self, _depth: f32, _normal: Vec3, _kd: Vec3, _ks: Vec3, _ns: f32, ke: Vec3) -> f32 {
+    fn shade_scalar(
+        &self,
+        _depth: f32,
+        _normal: Vec3,
+        _kd: Vec3,
+        _ks: Vec3,
+        _ns: f32,
+        ke: Vec3,
+    ) -> f32 {
         (1.0 + luma(ke)).clamp(0.0, 1.0)
     }
 
-    fn shade_rgb(&self, _depth: f32, _normal: Vec3, kd: Vec3, _ks: Vec3, _ns: f32, ke: Vec3) -> Vec3 {
+    fn shade_rgb(
+        &self,
+        _depth: f32,
+        _normal: Vec3,
+        kd: Vec3,
+        _ks: Vec3,
+        _ns: f32,
+        ke: Vec3,
+    ) -> Vec3 {
         kd + ke
     }
 }

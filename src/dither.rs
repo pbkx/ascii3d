@@ -164,5 +164,5 @@ fn ign_threshold(x: usize, y: usize) -> f32 {
     let fx = x as f32;
     let fy = y as f32;
     let a = (fx * 0.06711056 + fy * 0.00583715).fract();
-    (52.9829189 * a).fract()
+    (52.982_918 * a).fract()
 }

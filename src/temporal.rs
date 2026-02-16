@@ -77,7 +77,6 @@ impl TemporalState {
         self.step(x, y, luma, ramp_len, quantizer, cfg) as usize
     }
 
-
     pub(crate) fn step(
         &mut self,
         x: usize,
@@ -158,10 +157,7 @@ fn anchored_quantize(x: usize, y: usize, luma: f32, ramp_len: usize) -> u16 {
 }
 
 fn hash01(x: u32, y: u32) -> f32 {
-    let mut v = x
-        .wrapping_mul(0x9e3779b9)
-        ^ y.wrapping_mul(0x85ebca6b)
-        ^ 0x2c1b3c6d;
+    let mut v = x.wrapping_mul(0x9e3779b9) ^ y.wrapping_mul(0x85ebca6b) ^ 0x2c1b3c6d;
     v ^= v >> 16;
     v = v.wrapping_mul(0x7feb352d);
     v ^= v >> 15;

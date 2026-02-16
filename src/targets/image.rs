@@ -77,7 +77,15 @@ impl ImageTarget {
         }
     }
 
-    pub fn set_rgba(&mut self, x_px: usize, y_px: usize, red: u8, green: u8, blue: u8, alpha: u8) -> bool {
+    pub fn set_rgba(
+        &mut self,
+        x_px: usize,
+        y_px: usize,
+        red: u8,
+        green: u8,
+        blue: u8,
+        alpha: u8,
+    ) -> bool {
         if x_px >= self.width || y_px >= self.height {
             return false;
         }

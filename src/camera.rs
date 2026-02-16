@@ -43,13 +43,16 @@ impl Projection {
 
     pub fn matrix(&self, aspect: f32) -> Mat4 {
         match self {
-            Projection::Perspective { fov_y_radians, near, far } => {
+            Projection::Perspective {
+                fov_y_radians,
+                near,
+                far,
+            } => {
                 let f = 1.0 / (0.5 * *fov_y_radians).tan();
                 let a = aspect;
                 let near_plane = *near;
                 let far_plane = *far;
 
-                
                 let m00 = f / a;
                 let m11 = f;
                 let m22 = (far_plane + near_plane) / (near_plane - far_plane);
@@ -63,7 +66,11 @@ impl Projection {
                     Vec4::new(0.0, 0.0, m23, 0.0),
                 )
             }
-            Projection::Orthographic { half_height, near, far } => {
+            Projection::Orthographic {
+                half_height,
+                near,
+                far,
+            } => {
                 let half_h = *half_height;
                 let half_w = half_h * aspect;
 

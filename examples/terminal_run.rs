@@ -41,7 +41,8 @@ fn main() {
     let mut target = BufferTarget::new(80, 40);
     renderer.render(&scene, &mut target);
 
-    let mut presenter = TerminalPresenter::with_config(80, 40, TerminalPresenterConfig { color_mode });
+    let mut presenter =
+        TerminalPresenter::with_config(80, 40, TerminalPresenterConfig { color_mode });
     let _ = presenter.present(&mut io::stdout(), &target);
     thread::sleep(Duration::from_millis(1500));
 }

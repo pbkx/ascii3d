@@ -2,16 +2,17 @@ use crate::{
     debug::{rgb_for_view, scalar_for_view, DebugView},
     dither::{Dither, DitherMode},
     framegraph::{
-        apply_contrast, apply_edge_enhance, apply_tone_map_reinhard, FrameGraph, FramePassId, PostProcessSettings,
+        apply_contrast, apply_edge_enhance, apply_tone_map_reinhard, FrameGraph, FramePassId,
+        PostProcessSettings,
     },
-    glyph::{AsciiRamp, GlyphMode},
     gbuffer::GBuffer,
+    glyph::{AsciiRamp, GlyphMode},
     profile::RenderStats,
     raster,
     scene::Scene,
     shader::{BuiltinShader, ShaderId},
-    temporal::{TemporalConfig, TemporalQuantizer, TemporalState},
     targets::{BufferTarget, Cell, ImageTarget},
+    temporal::{TemporalConfig, TemporalQuantizer, TemporalState},
     types::Rgb8,
 };
 
@@ -225,7 +226,9 @@ impl Renderer {
 
         let gbuf_t0 = Instant::now();
         let mut gbuf = match self.config.glyph_mode() {
-            GlyphMode::HalfBlock => GBuffer::new(self.config.width(), self.config.height().saturating_mul(2)),
+            GlyphMode::HalfBlock => {
+                GBuffer::new(self.config.width(), self.config.height().saturating_mul(2))
+            }
             _ => GBuffer::new(self.config.width(), self.config.height()),
         };
         stats.gbuffer_alloc = gbuf_t0.elapsed();
@@ -255,7 +258,9 @@ impl Renderer {
         }
         target.clear(Cell::new(' ', Rgb8::BLACK, Rgb8::BLACK, f32::INFINITY));
         let mut gbuf = match self.config.glyph_mode() {
-            GlyphMode::HalfBlock => GBuffer::new(self.config.width(), self.config.height().saturating_mul(2)),
+            GlyphMode::HalfBlock => {
+                GBuffer::new(self.config.width(), self.config.height().saturating_mul(2))
+            }
             _ => GBuffer::new(self.config.width(), self.config.height()),
         };
         if self.config.tile_binning {
@@ -317,7 +322,8 @@ impl Renderer {
                 FramePassId::EdgeEnhance => {
                     apply_edge_enhance(rgb, width, height, self.config.post_process().edge_enhance)
                 }
-                FramePassId::RasterizeGBuffer | FramePassId::Shade | FramePassId::ResolveTarget => {}
+                FramePassId::RasterizeGBuffer | FramePassId::Shade | FramePassId::ResolveTarget => {
+                }
             }
         }
     }
@@ -363,7 +369,8 @@ impl Renderer {
                     p.ns,
                     p.ke,
                 );
-                let rgb_u8 = (rgb.clamp(Vec3::ZERO, Vec3::ONE) * 255.0 + Vec3::splat(0.5)).as_uvec3();
+                let rgb_u8 =
+                    (rgb.clamp(Vec3::ZERO, Vec3::ONE) * 255.0 + Vec3::splat(0.5)).as_uvec3();
                 let mut cell = match self.config.glyph_mode() {
                     GlyphMode::AsciiRamp(ramp) => {
                         let bytes = ramp.bytes();
@@ -377,7 +384,9 @@ impl Renderer {
                             }
 
                             let idx = if temporal_cfg.enabled {
-                                let mut q = if temporal_cfg.anchored_dither && dither_mode == DitherMode::None {
+                                let mut q = if temporal_cfg.anchored_dither
+                                    && dither_mode == DitherMode::None
+                                {
                                     TemporalQuantizer::Anchored
                                 } else {
                                     TemporalQuantizer::Dither(&mut dither)
@@ -400,7 +409,10 @@ impl Renderer {
                             Cell::new(bytes[idx] as char, Rgb8::BLACK, Rgb8::BLACK, p.depth)
                         }
                     }
-                    GlyphMode::HalfBlock => self.config.glyph_mode().cell_from_scalar(shade_scalar, p.depth),
+                    GlyphMode::HalfBlock => self
+                        .config
+                        .glyph_mode()
+                        .cell_from_scalar(shade_scalar, p.depth),
                 };
                 cell.fg = Rgb8::new(
                     u8::try_from(rgb_u8.x).unwrap_or(255),
@@ -452,7 +464,9 @@ impl Renderer {
                             }
 
                             let idx = if temporal_cfg.enabled {
-                                let mut q = if temporal_cfg.anchored_dither && dither_mode == DitherMode::None {
+                                let mut q = if temporal_cfg.anchored_dither
+                                    && dither_mode == DitherMode::None
+                                {
                                     TemporalQuantizer::Anchored
                                 } else {
                                     TemporalQuantizer::Dither(&mut dither)
@@ -473,7 +487,10 @@ impl Renderer {
                             Cell::new(bytes[idx] as char, Rgb8::BLACK, Rgb8::BLACK, p.depth)
                         }
                     }
-                    GlyphMode::HalfBlock => self.config.glyph_mode().cell_from_scalar(shade_scalar, p.depth),
+                    GlyphMode::HalfBlock => self
+                        .config
+                        .glyph_mode()
+                        .cell_from_scalar(shade_scalar, p.depth),
                 };
                 cell.fg = Self::to_u8_rgb(rgb_px);
                 cell.bg = Rgb8::BLACK;
@@ -498,8 +515,16 @@ impl Renderer {
             let y0 = y.saturating_mul(2);
             let y1 = y0 + 1;
             for x in 0..target.width() {
-                let p0 = if y0 < gbuf.height() { gbuf.at(x, y0) } else { None };
-                let p1 = if y1 < gbuf.height() { gbuf.at(x, y1) } else { None };
+                let p0 = if y0 < gbuf.height() {
+                    gbuf.at(x, y0)
+                } else {
+                    None
+                };
+                let p1 = if y1 < gbuf.height() {
+                    gbuf.at(x, y1)
+                } else {
+                    None
+                };
 
                 let p0_ok = p0.map_or(false, |p| p.depth.is_finite());
                 let p1_ok = p1.map_or(false, |p| p.depth.is_finite());
@@ -556,13 +581,21 @@ impl Renderer {
                     ));
                     let _ = target.set(x, y, Cell::new('▄', rgb1, Rgb8::BLACK, p1.depth));
                 } else {
-                    let _ = target.set(x, y, Cell::new(' ', Rgb8::BLACK, Rgb8::BLACK, f32::INFINITY));
+                    let _ = target.set(
+                        x,
+                        y,
+                        Cell::new(' ', Rgb8::BLACK, Rgb8::BLACK, f32::INFINITY),
+                    );
                 }
             }
         }
     }
 
-    fn map_gbuffer_to_buffer_half_block_with_post(&self, gbuf: &GBuffer, target: &mut BufferTarget) {
+    fn map_gbuffer_to_buffer_half_block_with_post(
+        &self,
+        gbuf: &GBuffer,
+        target: &mut BufferTarget,
+    ) {
         let mut rgb = vec![Vec3::ZERO; gbuf.width().saturating_mul(gbuf.height())];
         self.shade_gbuffer_to_rgb_buffer(gbuf, &mut rgb);
         self.run_post_process_passes(&mut rgb, gbuf.width(), gbuf.height());
@@ -571,8 +604,16 @@ impl Renderer {
             let y0 = y.saturating_mul(2);
             let y1 = y0 + 1;
             for x in 0..target.width() {
-                let p0 = if y0 < gbuf.height() { gbuf.at(x, y0) } else { None };
-                let p1 = if y1 < gbuf.height() { gbuf.at(x, y1) } else { None };
+                let p0 = if y0 < gbuf.height() {
+                    gbuf.at(x, y0)
+                } else {
+                    None
+                };
+                let p1 = if y1 < gbuf.height() {
+                    gbuf.at(x, y1)
+                } else {
+                    None
+                };
 
                 let p0_ok = p0.map_or(false, |p| p.depth.is_finite());
                 let p1_ok = p1.map_or(false, |p| p.depth.is_finite());
@@ -593,7 +634,11 @@ impl Renderer {
                     let rgb1 = Self::to_u8_rgb(rgb[y1 * gbuf.width() + x]);
                     let _ = target.set(x, y, Cell::new('▄', rgb1, Rgb8::BLACK, p1.depth));
                 } else {
-                    let _ = target.set(x, y, Cell::new(' ', Rgb8::BLACK, Rgb8::BLACK, f32::INFINITY));
+                    let _ = target.set(
+                        x,
+                        y,
+                        Cell::new(' ', Rgb8::BLACK, Rgb8::BLACK, f32::INFINITY),
+                    );
                 }
             }
         }
@@ -655,8 +700,10 @@ impl Renderer {
     pub fn resolve_gbuffer_to_buffer(&self, gbuf: &GBuffer, target: &mut BufferTarget) {
         if target.width() != self.config.width()
             || target.height() != self.config.height()
-            || (matches!(&self.config.glyph_mode, GlyphMode::HalfBlock) && gbuf.height() != target.height() * 2)
-            || (!matches!(&self.config.glyph_mode, GlyphMode::HalfBlock) && gbuf.height() != target.height())
+            || (matches!(&self.config.glyph_mode, GlyphMode::HalfBlock)
+                && gbuf.height() != target.height() * 2)
+            || (!matches!(&self.config.glyph_mode, GlyphMode::HalfBlock)
+                && gbuf.height() != target.height())
             || gbuf.width() != target.width()
         {
             // Caller is responsible for providing a correctly-sized target/gbuffer pair.
@@ -711,8 +758,18 @@ impl Renderer {
                 if !p.depth.is_finite() {
                     continue;
                 }
-                let rgb = rgb_for_view(self.config.debug_view(), self.config.shader(), p.depth, p.normal, p.kd, p.ks, p.ns, p.ke);
-                let rgb_u8 = (rgb.clamp(Vec3::ZERO, Vec3::ONE) * 255.0 + Vec3::splat(0.5)).as_uvec3();
+                let rgb = rgb_for_view(
+                    self.config.debug_view(),
+                    self.config.shader(),
+                    p.depth,
+                    p.normal,
+                    p.kd,
+                    p.ks,
+                    p.ns,
+                    p.ke,
+                );
+                let rgb_u8 =
+                    (rgb.clamp(Vec3::ZERO, Vec3::ONE) * 255.0 + Vec3::splat(0.5)).as_uvec3();
                 let _ = target.set_rgba(
                     x,
                     y,
@@ -728,9 +785,12 @@ impl Renderer {
 
 #[cfg(test)]
 mod tests {
-    use crate::{AsciiRamp, DebugView, DitherMode, GlyphMode, Material, Mesh, Renderer, RendererConfig, Scene, ShaderId, TemporalConfig, Transform, Texture};
     use crate::camera::Projection;
     use crate::Camera;
+    use crate::{
+        AsciiRamp, DebugView, DitherMode, GlyphMode, Material, Mesh, Renderer, RendererConfig,
+        Scene, ShaderId, TemporalConfig, Texture, Transform,
+    };
     use glam::{Vec2, Vec3};
 
     #[test]
@@ -799,14 +859,26 @@ mod tests {
             Material::default(),
         );
 
-        let renderer_none =
-            Renderer::new(RendererConfig::default().with_size(64, 32).with_dither_mode(DitherMode::None));
-        let renderer_ordered =
-            Renderer::new(RendererConfig::default().with_size(64, 32).with_dither_mode(DitherMode::Ordered));
-        let renderer_noise =
-            Renderer::new(RendererConfig::default().with_size(64, 32).with_dither_mode(DitherMode::BlueNoise));
-        let renderer_diff =
-            Renderer::new(RendererConfig::default().with_size(64, 32).with_dither_mode(DitherMode::ErrorDiffusion));
+        let renderer_none = Renderer::new(
+            RendererConfig::default()
+                .with_size(64, 32)
+                .with_dither_mode(DitherMode::None),
+        );
+        let renderer_ordered = Renderer::new(
+            RendererConfig::default()
+                .with_size(64, 32)
+                .with_dither_mode(DitherMode::Ordered),
+        );
+        let renderer_noise = Renderer::new(
+            RendererConfig::default()
+                .with_size(64, 32)
+                .with_dither_mode(DitherMode::BlueNoise),
+        );
+        let renderer_diff = Renderer::new(
+            RendererConfig::default()
+                .with_size(64, 32)
+                .with_dither_mode(DitherMode::ErrorDiffusion),
+        );
 
         let mut t_none = crate::targets::BufferTarget::new(64, 32);
         let mut t_ordered = crate::targets::BufferTarget::new(64, 32);
@@ -843,8 +915,16 @@ mod tests {
     #[test]
     fn pr23_tiled_matches_immediate_output_hash() {
         let mut scene = Scene::new();
-        scene.add_object(Mesh::unit_triangle(), Transform::IDENTITY, Material::default());
-        scene.add_object(Mesh::unit_triangle(), Transform::from_translation(Vec3::new(0.25, 0.0, 0.0)), Material::default());
+        scene.add_object(
+            Mesh::unit_triangle(),
+            Transform::IDENTITY,
+            Material::default(),
+        );
+        scene.add_object(
+            Mesh::unit_triangle(),
+            Transform::from_translation(Vec3::new(0.25, 0.0, 0.0)),
+            Material::default(),
+        );
 
         let mut img_immediate = crate::targets::ImageTarget::new(64, 64);
         let mut img_tiled = crate::targets::ImageTarget::new(64, 64);
@@ -862,11 +942,14 @@ mod tests {
         assert_eq!(img_immediate.hash64(), img_tiled.hash64());
     }
 
-
     #[test]
     fn smoke_triangle_image_hash_snapshot() {
         let mut scene = Scene::new();
-        scene.add_object(Mesh::unit_triangle(), Transform::IDENTITY, Material::default());
+        scene.add_object(
+            Mesh::unit_triangle(),
+            Transform::IDENTITY,
+            Material::default(),
+        );
         let renderer = Renderer::new(RendererConfig::default().with_size(64, 32));
         let mut img = crate::targets::ImageTarget::new(64, 32);
         let empty_hash = img.hash64();
@@ -881,11 +964,19 @@ mod tests {
     #[test]
     fn debug_normals_changes_output() {
         let mut scene = Scene::new();
-        scene.add_object(Mesh::unit_triangle(), Transform::IDENTITY, Material::default());
+        scene.add_object(
+            Mesh::unit_triangle(),
+            Transform::IDENTITY,
+            Material::default(),
+        );
         let mut img_final = crate::targets::ImageTarget::new(64, 32);
         let mut img_norm = crate::targets::ImageTarget::new(64, 32);
         let r_final = Renderer::new(RendererConfig::default().with_size(64, 32));
-        let r_norm = Renderer::new(RendererConfig::default().with_size(64, 32).with_debug_view(DebugView::Normals));
+        let r_norm = Renderer::new(
+            RendererConfig::default()
+                .with_size(64, 32)
+                .with_debug_view(DebugView::Normals),
+        );
         r_final.render_image(&scene, &mut img_final);
         r_norm.render_image(&scene, &mut img_norm);
         assert_ne!(img_final.hash64(), img_norm.hash64());
@@ -894,11 +985,23 @@ mod tests {
     #[test]
     fn shader_changes_output_hash() {
         let mut scene = Scene::new();
-        scene.add_object(Mesh::unit_triangle(), Transform::IDENTITY, Material::default());
+        scene.add_object(
+            Mesh::unit_triangle(),
+            Transform::IDENTITY,
+            Material::default(),
+        );
         let mut img_lambert = crate::targets::ImageTarget::new(64, 32);
         let mut img_unlit = crate::targets::ImageTarget::new(64, 32);
-        let r_lambert = Renderer::new(RendererConfig::default().with_size(64, 32).with_shader_id(ShaderId::Lambert));
-        let r_unlit = Renderer::new(RendererConfig::default().with_size(64, 32).with_shader_id(ShaderId::Unlit));
+        let r_lambert = Renderer::new(
+            RendererConfig::default()
+                .with_size(64, 32)
+                .with_shader_id(ShaderId::Lambert),
+        );
+        let r_unlit = Renderer::new(
+            RendererConfig::default()
+                .with_size(64, 32)
+                .with_shader_id(ShaderId::Unlit),
+        );
         r_lambert.render_image(&scene, &mut img_lambert);
         r_unlit.render_image(&scene, &mut img_unlit);
         assert_ne!(img_lambert.hash64(), img_unlit.hash64());
@@ -907,7 +1010,10 @@ mod tests {
     #[test]
     fn shader_uses_ks_and_ns_changes_output_hash() {
         let mut cfg = RendererConfig::default();
-        cfg = cfg.with_size(64, 32).with_debug_view(DebugView::Final).with_shader_id(ShaderId::Lambert);
+        cfg = cfg
+            .with_size(64, 32)
+            .with_debug_view(DebugView::Final)
+            .with_shader_id(ShaderId::Lambert);
 
         let render_hash = |mat: Material| -> u64 {
             let mut scene = Scene::new();
@@ -944,11 +1050,24 @@ mod tests {
     #[test]
     fn debug_view_modes_produce_distinct_hashes() {
         let mut scene = Scene::new();
-        scene.add_object(Mesh::unit_triangle(), Transform::IDENTITY, Material::default());
-        let views = [DebugView::Final, DebugView::Depth, DebugView::Normals, DebugView::Albedo];
+        scene.add_object(
+            Mesh::unit_triangle(),
+            Transform::IDENTITY,
+            Material::default(),
+        );
+        let views = [
+            DebugView::Final,
+            DebugView::Depth,
+            DebugView::Normals,
+            DebugView::Albedo,
+        ];
         let mut hashes = std::collections::HashSet::new();
         for v in views {
-            let renderer = Renderer::new(RendererConfig::default().with_size(64, 32).with_debug_view(v));
+            let renderer = Renderer::new(
+                RendererConfig::default()
+                    .with_size(64, 32)
+                    .with_debug_view(v),
+            );
             let mut img = crate::targets::ImageTarget::new(64, 32);
             renderer.render_image(&scene, &mut img);
             hashes.insert(img.hash64());
@@ -965,7 +1084,9 @@ mod tests {
         let mut contrast_img = crate::targets::ImageTarget::new(64, 32);
         let mut edge_img = crate::targets::ImageTarget::new(64, 32);
 
-        let base_cfg = RendererConfig::default().with_size(64, 32).with_debug_view(DebugView::Final);
+        let base_cfg = RendererConfig::default()
+            .with_size(64, 32)
+            .with_debug_view(DebugView::Final);
         let r_base = Renderer::new(base_cfg.clone());
         let r_tone = Renderer::new(base_cfg.clone().with_tone_map(true));
         let r_contrast = Renderer::new(base_cfg.clone().with_contrast(1.35));
@@ -1071,7 +1192,6 @@ mod tests {
         scene
     }
 
-
     #[test]
     fn temporal_reduces_glyph_churn_two_frames() {
         // Choose an angle delta that produces a non-trivial amount of churn in a deterministic
@@ -1087,14 +1207,12 @@ mod tests {
             .with_dither_mode(DitherMode::BlueNoise);
 
         let renderer_no_temporal = Renderer::new(cfg_base.clone().with_temporal_enabled(false));
-        let renderer_temporal = Renderer::new(
-            cfg_base.with_temporal_config(TemporalConfig {
-                enabled: true,
-                ema_alpha: 0.35,
-                hysteresis: 0.02,
-                anchored_dither: true,
-            }),
-        );
+        let renderer_temporal = Renderer::new(cfg_base.with_temporal_config(TemporalConfig {
+            enabled: true,
+            ema_alpha: 0.35,
+            hysteresis: 0.02,
+            anchored_dither: true,
+        }));
 
         let scene_a = make_scene(0.55);
         let mut a1 = crate::targets::BufferTarget::new(w, h);
@@ -1136,5 +1254,4 @@ mod tests {
             assert!(churn_temporal <= churn_no * 0.9);
         }
     }
-
-    }
+}

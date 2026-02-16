@@ -5,7 +5,11 @@ use ascii3d::{
 
 fn main() {
     let mut scene = Scene::new();
-    scene.add_object(Mesh::unit_triangle(), Transform::IDENTITY, Material::default());
+    scene.add_object(
+        Mesh::unit_triangle(),
+        Transform::IDENTITY,
+        Material::default(),
+    );
 
     let renderer = Renderer::new(RendererConfig::default().with_size(80, 40));
 

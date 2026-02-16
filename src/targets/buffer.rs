@@ -141,9 +141,21 @@ mod tests {
     #[test]
     fn buffer_hash_is_deterministic() {
         let mut b = BufferTarget::new(4, 3);
-        b.set(0, 0, Cell::new('A', Rgb8::new(1, 2, 3), Rgb8::new(4, 5, 6), 0.5));
-        b.set(3, 2, Cell::new('Z', Rgb8::new(255, 0, 17), Rgb8::BLACK, 42.0));
-        b.set(2, 1, Cell::new('█', Rgb8::new(7, 3, 9), Rgb8::new(1, 0, 0), 1.25));
+        b.set(
+            0,
+            0,
+            Cell::new('A', Rgb8::new(1, 2, 3), Rgb8::new(4, 5, 6), 0.5),
+        );
+        b.set(
+            3,
+            2,
+            Cell::new('Z', Rgb8::new(255, 0, 17), Rgb8::BLACK, 42.0),
+        );
+        b.set(
+            2,
+            1,
+            Cell::new('█', Rgb8::new(7, 3, 9), Rgb8::new(1, 0, 0), 1.25),
+        );
 
         let h = b.hash64();
         assert_eq!(h, 11_525_354_658_919_025_284_u64);
