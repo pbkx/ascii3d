@@ -15,6 +15,11 @@ pub struct LoadedObj {
     pub tri_materials: Vec<u32>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ObjLoadOptions {
+    pub flip_v: bool,
+}
+
 #[derive(Clone, Debug)]
 pub enum ObjError {
     Io,
@@ -111,7 +116,11 @@ struct ParsedObj {
     mtllib: Option<String>,
 }
 
-fn parse_obj(src: &str, mat_map: &HashMap<String, u32>) -> Result<ParsedObj, ObjError> {
+fn parse_obj(
+    src: &str,
+    mat_map: &HashMap<String, u32>,
+    options: ObjLoadOptions,
+) -> Result<ParsedObj, ObjError> {
     let mut positions: Vec<Vec3> = Vec::new();
     let mut normals: Vec<Vec3> = Vec::new();
     let mut texcoords: Vec<Vec2> = Vec::new();
@@ -145,7 +154,11 @@ fn parse_obj(src: &str, mat_map: &HashMap<String, u32>) -> Result<ParsedObj, Obj
             "vt" => {
                 let u = it.next().ok_or(ObjError::ParseFloat)?;
                 let v = it.next().ok_or(ObjError::ParseFloat)?;
-                texcoords.push(Vec2::new(parse_f32(u)?, parse_f32(v)?));
+                let mut v = parse_f32(v)?;
+                if options.flip_v {
+                    v = 1.0 - v;
+                }
+                texcoords.push(Vec2::new(parse_f32(u)?, v));
             }
             "f" => {
                 let corners: Result<Vec<FaceIndex>, ObjError> = it.map(parse_face_index).collect();
@@ -307,7 +320,12 @@ fn triangulate(idxs: &[u32], mat: u32, mesh: &mut Mesh, tri_materials: &mut Vec<
     }
 }
 
-fn triangulate_ear_clip(idxs: &[u32], mat: u32, mesh: &mut Mesh, tri_materials: &mut Vec<u32>) -> bool {
+fn triangulate_ear_clip(
+    idxs: &[u32],
+    mat: u32,
+    mesh: &mut Mesh,
+    tri_materials: &mut Vec<u32>,
+) -> bool {
     const EPS: f32 = 1e-8;
     let mut poly3: Vec<Vec3> = Vec::with_capacity(idxs.len());
     for &idx in idxs {
@@ -392,7 +410,8 @@ fn triangulate_ear_clip(idxs: &[u32], mat: u32, mesh: &mut Mesh, tri_materials: 
     }
 
     if rem.len() == 3 {
-        mesh.indices.push([idxs[rem[0]], idxs[rem[1]], idxs[rem[2]]]);
+        mesh.indices
+            .push([idxs[rem[0]], idxs[rem[1]], idxs[rem[2]]]);
         tri_materials.push(mat);
         true
     } else {
@@ -452,6 +471,13 @@ fn read_to_string(path: &Path) -> Result<String, ObjError> {
 }
 
 pub fn load_obj_with_mtl(path: impl AsRef<Path>) -> Result<LoadedObj, ObjError> {
+    load_obj_with_mtl_opts(path, ObjLoadOptions::default())
+}
+
+pub fn load_obj_with_mtl_opts(
+    path: impl AsRef<Path>,
+    options: ObjLoadOptions,
+) -> Result<LoadedObj, ObjError> {
     let path = path.as_ref();
     let obj_src = read_to_string(path)?;
 
@@ -460,7 +486,7 @@ pub fn load_obj_with_mtl(path: impl AsRef<Path>) -> Result<LoadedObj, ObjError> 
     let mut mat_map: HashMap<String, u32> = HashMap::new();
     mat_map.insert("default".to_string(), 0);
 
-    let parsed = parse_obj(&obj_src, &mat_map)?;
+    let parsed = parse_obj(&obj_src, &mat_map, options)?;
 
     if let Some(mtl_name) = &parsed.mtllib {
         let mtl_path = resolve_mtl_path(path, mtl_name);
@@ -475,7 +501,7 @@ pub fn load_obj_with_mtl(path: impl AsRef<Path>) -> Result<LoadedObj, ObjError> 
         }
     }
 
-    let parsed = parse_obj(&obj_src, &mat_map)?;
+    let parsed = parse_obj(&obj_src, &mat_map, options)?;
     build_mesh(parsed, materials, material_names)
 }
 
@@ -503,6 +529,14 @@ pub fn load_obj_with_mtl_str_mesh_materials(
 }
 
 pub fn load_obj_with_mtl_str(obj_src: &str, mtl_src: Option<&str>) -> Result<LoadedObj, ObjError> {
+    load_obj_with_mtl_str_opts(obj_src, mtl_src, ObjLoadOptions::default())
+}
+
+pub fn load_obj_with_mtl_str_opts(
+    obj_src: &str,
+    mtl_src: Option<&str>,
+    options: ObjLoadOptions,
+) -> Result<LoadedObj, ObjError> {
     let mut material_names = vec!["default".to_string()];
     let mut materials = vec![Material::default()];
     let mut mat_map: HashMap<String, u32> = HashMap::new();
@@ -518,7 +552,7 @@ pub fn load_obj_with_mtl_str(obj_src: &str, mtl_src: Option<&str>) -> Result<Loa
         }
     }
 
-    let parsed = parse_obj(obj_src, &mat_map)?;
+    let parsed = parse_obj(obj_src, &mat_map, options)?;
     build_mesh(parsed, materials, material_names)
 }
 
@@ -591,6 +625,25 @@ f 1/1 2/2 3/3
         assert_eq!(loaded.mesh.positions.len(), 3);
         assert_eq!(loaded.mesh.uvs.len(), 3);
         loaded.mesh.assert_invariants();
+    }
+
+    #[test]
+    fn obj_flip_v_option_flips_texture_v_axis() {
+        let obj = r"
+v 0 0 0
+v 1 0 0
+v 0 1 0
+vt 0.25 0.2
+vt 0.75 0.4
+vt 0.5 0.6
+f 1/1 2/2 3/3
+";
+        let loaded_default =
+            load_obj_with_mtl_str_opts(obj, None, ObjLoadOptions::default()).unwrap();
+        let loaded_flip =
+            load_obj_with_mtl_str_opts(obj, None, ObjLoadOptions { flip_v: true }).unwrap();
+        assert!((loaded_default.mesh.uvs[0].y - 0.2).abs() < 1e-6);
+        assert!((loaded_flip.mesh.uvs[0].y - 0.8).abs() < 1e-6);
     }
 
     #[test]

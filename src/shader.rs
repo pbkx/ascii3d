@@ -7,12 +7,31 @@ pub struct ShadeSample {
 }
 
 pub trait Shader {
-    fn shade_scalar(&self, depth: f32, normal: Vec3, kd: Vec3, ks: Vec3, ns: f32, ke: Vec3) -> f32;
-    fn shade_rgb(&self, depth: f32, normal: Vec3, kd: Vec3, ks: Vec3, ns: f32, ke: Vec3) -> Vec3;
+    fn shade_scalar(
+        &self,
+        depth: f32,
+        view_pos: Vec3,
+        normal: Vec3,
+        kd: Vec3,
+        ks: Vec3,
+        ns: f32,
+        ke: Vec3,
+    ) -> f32;
+    fn shade_rgb(
+        &self,
+        depth: f32,
+        view_pos: Vec3,
+        normal: Vec3,
+        kd: Vec3,
+        ks: Vec3,
+        ns: f32,
+        ke: Vec3,
+    ) -> Vec3;
 
     fn shade(
         &self,
         depth: f32,
+        view_pos: Vec3,
         normal: Vec3,
         kd: Vec3,
         ks: Vec3,
@@ -20,14 +39,13 @@ pub trait Shader {
         ke: Vec3,
     ) -> ShadeSample {
         ShadeSample {
-            intensity: self.shade_scalar(depth, normal, kd, ks, ns, ke),
-            rgb: self.shade_rgb(depth, normal, kd, ks, ns, ke),
+            intensity: self.shade_scalar(depth, view_pos, normal, kd, ks, ns, ke),
+            rgb: self.shade_rgb(depth, view_pos, normal, kd, ks, ns, ke),
         }
     }
 }
 
 fn luma(rgb: Vec3) -> f32 {
-    // Rec.709 luma coefficients
     0.2126 * rgb.x + 0.7152 * rgb.y + 0.0722 * rgb.z
 }
 
@@ -54,10 +72,20 @@ impl Default for LambertShader {
     }
 }
 
+fn view_dir_from_view_pos(view_pos: Vec3) -> Vec3 {
+    let v = (-view_pos).normalize_or_zero();
+    if v.length_squared() > 0.0 {
+        v
+    } else {
+        Vec3::new(0.0, 0.0, 1.0)
+    }
+}
+
 impl Shader for LambertShader {
     fn shade_scalar(
         &self,
         _depth: f32,
+        view_pos: Vec3,
         normal: Vec3,
         _kd: Vec3,
         ks: Vec3,
@@ -66,17 +94,13 @@ impl Shader for LambertShader {
     ) -> f32 {
         let n = normal.normalize_or_zero();
         let l = self.light_dir.normalize_or_zero();
+        let v = view_dir_from_view_pos(view_pos);
         let ndotl = n.dot(l).clamp(0.0, 1.0);
 
-        // Keep the historic behavior for the base "lighting intensity" so existing
-        // golden hashes remain stable when Ks/Ke are zero.
         let base = (self.ambient + (1.0 - self.ambient) * ndotl).clamp(0.0, 1.0);
-
         let mut t = base;
 
-        // Specular highlight (Blinn–Phong) from Ks/Ns.
         if ndotl > 0.0 && ns > 0.0 && ks.length_squared() > 0.0 {
-            let v = Vec3::new(0.0, 0.0, 1.0);
             let h = (l + v).normalize_or_zero();
             let ndoth = n.dot(h).clamp(0.0, 1.0);
             let shin = ns.max(1.0);
@@ -84,7 +108,6 @@ impl Shader for LambertShader {
             t += luma(ks) * spec;
         }
 
-        // Emissive adds directly.
         if ke.length_squared() > 0.0 {
             t += luma(ke);
         }
@@ -92,16 +115,24 @@ impl Shader for LambertShader {
         t.clamp(0.0, 1.0)
     }
 
-    fn shade_rgb(&self, _depth: f32, normal: Vec3, kd: Vec3, ks: Vec3, ns: f32, ke: Vec3) -> Vec3 {
+    fn shade_rgb(
+        &self,
+        _depth: f32,
+        view_pos: Vec3,
+        normal: Vec3,
+        kd: Vec3,
+        ks: Vec3,
+        ns: f32,
+        ke: Vec3,
+    ) -> Vec3 {
         let n = normal.normalize_or_zero();
         let l = self.light_dir.normalize_or_zero();
+        let v = view_dir_from_view_pos(view_pos);
         let ndotl = n.dot(l).clamp(0.0, 1.0);
         let base = (self.ambient + (1.0 - self.ambient) * ndotl).clamp(0.0, 1.0);
 
         let mut out = kd * base;
-
         if ndotl > 0.0 && ns > 0.0 && ks.length_squared() > 0.0 {
-            let v = Vec3::new(0.0, 0.0, 1.0);
             let h = (l + v).normalize_or_zero();
             let ndoth = n.dot(h).clamp(0.0, 1.0);
             let shin = ns.max(1.0);
@@ -120,6 +151,7 @@ impl Shader for UnlitShader {
     fn shade_scalar(
         &self,
         _depth: f32,
+        _view_pos: Vec3,
         _normal: Vec3,
         _kd: Vec3,
         _ks: Vec3,
@@ -132,6 +164,7 @@ impl Shader for UnlitShader {
     fn shade_rgb(
         &self,
         _depth: f32,
+        _view_pos: Vec3,
         _normal: Vec3,
         kd: Vec3,
         _ks: Vec3,
@@ -165,17 +198,35 @@ impl BuiltinShader {
 }
 
 impl Shader for BuiltinShader {
-    fn shade_scalar(&self, depth: f32, normal: Vec3, kd: Vec3, ks: Vec3, ns: f32, ke: Vec3) -> f32 {
+    fn shade_scalar(
+        &self,
+        depth: f32,
+        view_pos: Vec3,
+        normal: Vec3,
+        kd: Vec3,
+        ks: Vec3,
+        ns: f32,
+        ke: Vec3,
+    ) -> f32 {
         match *self {
-            BuiltinShader::Lambert(s) => s.shade_scalar(depth, normal, kd, ks, ns, ke),
-            BuiltinShader::Unlit(s) => s.shade_scalar(depth, normal, kd, ks, ns, ke),
+            BuiltinShader::Lambert(s) => s.shade_scalar(depth, view_pos, normal, kd, ks, ns, ke),
+            BuiltinShader::Unlit(s) => s.shade_scalar(depth, view_pos, normal, kd, ks, ns, ke),
         }
     }
 
-    fn shade_rgb(&self, depth: f32, normal: Vec3, kd: Vec3, ks: Vec3, ns: f32, ke: Vec3) -> Vec3 {
+    fn shade_rgb(
+        &self,
+        depth: f32,
+        view_pos: Vec3,
+        normal: Vec3,
+        kd: Vec3,
+        ks: Vec3,
+        ns: f32,
+        ke: Vec3,
+    ) -> Vec3 {
         match *self {
-            BuiltinShader::Lambert(s) => s.shade_rgb(depth, normal, kd, ks, ns, ke),
-            BuiltinShader::Unlit(s) => s.shade_rgb(depth, normal, kd, ks, ns, ke),
+            BuiltinShader::Lambert(s) => s.shade_rgb(depth, view_pos, normal, kd, ks, ns, ke),
+            BuiltinShader::Unlit(s) => s.shade_rgb(depth, view_pos, normal, kd, ks, ns, ke),
         }
     }
 }

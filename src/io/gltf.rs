@@ -1,7 +1,9 @@
-use crate::texture::{Texture, TextureFilter, TextureHandle, TextureSampler, TextureWrapMode};
+use crate::texture::{
+    Texture, TextureHandle, TextureMagFilter, TextureMinFilter, TextureSampler, TextureWrapMode,
+};
 use crate::{
     io::texture::{load_texture_rgba8_from_bytes_raw, TextureIoError},
-    Material, Mesh, Scene, Transform,
+    AlphaMode, Camera, Light, Material, Mesh, Projection, Scene, Transform,
 };
 use glam::{Mat3, Mat4, Quat, Vec2, Vec3, Vec4};
 use serde::Deserialize;
@@ -34,6 +36,7 @@ pub enum GltfError {
     UnsupportedAnimationPath,
     UnsupportedInterpolation,
     InvalidAnimation,
+    UnsupportedMaterialFeature,
 }
 
 impl fmt::Display for GltfError {
@@ -59,6 +62,7 @@ impl fmt::Display for GltfError {
             Self::UnsupportedAnimationPath => write!(f, "unsupported animation path"),
             Self::UnsupportedInterpolation => write!(f, "unsupported animation interpolation"),
             Self::InvalidAnimation => write!(f, "invalid animation data"),
+            Self::UnsupportedMaterialFeature => write!(f, "unsupported material feature"),
         }
     }
 }
@@ -94,6 +98,10 @@ struct GltfRoot {
     scene: Option<usize>,
     #[serde(default)]
     animations: Vec<AnimationDef>,
+    #[serde(default)]
+    cameras: Vec<CameraDef>,
+    #[serde(default)]
+    extensions: Option<RootExtensionsDef>,
 }
 
 #[derive(Deserialize)]
@@ -157,6 +165,30 @@ struct PrimitiveDef {
 struct MaterialDef {
     #[serde(rename = "pbrMetallicRoughness", default)]
     pbr_metallic_roughness: Option<PbrMetallicRoughnessDef>,
+    #[serde(rename = "alphaMode", default)]
+    alpha_mode: Option<String>,
+    #[serde(rename = "alphaCutoff", default)]
+    alpha_cutoff: Option<f32>,
+    #[serde(rename = "doubleSided", default)]
+    double_sided: Option<bool>,
+    #[serde(rename = "emissiveFactor", default)]
+    emissive_factor: Option<[f32; 3]>,
+    #[serde(rename = "normalTexture", default)]
+    normal_texture: Option<NormalTextureInfoDef>,
+    #[serde(rename = "occlusionTexture", default)]
+    occlusion_texture: Option<TextureInfoDef>,
+    #[serde(rename = "emissiveTexture", default)]
+    emissive_texture: Option<TextureInfoDef>,
+}
+
+#[derive(Deserialize)]
+struct NormalTextureInfoDef {
+    #[serde(rename = "index")]
+    _index: usize,
+    #[serde(rename = "texCoord", default)]
+    _tex_coord: Option<usize>,
+    #[serde(default)]
+    _scale: Option<f32>,
 }
 
 #[derive(Deserialize)]
@@ -165,11 +197,37 @@ struct PbrMetallicRoughnessDef {
     base_color_factor: Option<[f32; 4]>,
     #[serde(rename = "baseColorTexture", default)]
     base_color_texture: Option<TextureInfoDef>,
+    #[serde(rename = "metallicFactor", default)]
+    metallic_factor: Option<f32>,
+    #[serde(rename = "roughnessFactor", default)]
+    roughness_factor: Option<f32>,
+    #[serde(rename = "metallicRoughnessTexture", default)]
+    metallic_roughness_texture: Option<TextureInfoDef>,
 }
 
 #[derive(Deserialize)]
 struct TextureInfoDef {
     index: usize,
+    #[serde(rename = "texCoord", default)]
+    tex_coord: Option<usize>,
+    #[serde(default)]
+    extensions: Option<TextureInfoExtensionsDef>,
+}
+
+#[derive(Deserialize)]
+struct TextureInfoExtensionsDef {
+    #[serde(rename = "KHR_texture_transform", default)]
+    texture_transform: Option<TextureTransformDef>,
+}
+
+#[derive(Deserialize)]
+struct TextureTransformDef {
+    #[serde(default)]
+    offset: Option<[f32; 2]>,
+    #[serde(default)]
+    rotation: Option<f32>,
+    #[serde(default)]
+    scale: Option<[f32; 2]>,
     #[serde(rename = "texCoord", default)]
     tex_coord: Option<usize>,
 }
@@ -218,6 +276,70 @@ struct NodeDef {
     rotation: Option<[f32; 4]>,
     #[serde(default)]
     scale: Option<[f32; 3]>,
+    #[serde(default)]
+    camera: Option<usize>,
+    #[serde(default)]
+    extensions: Option<NodeExtensionsDef>,
+}
+
+#[derive(Deserialize)]
+struct NodeExtensionsDef {
+    #[serde(rename = "KHR_lights_punctual", default)]
+    lights: Option<NodeLightRefDef>,
+}
+
+#[derive(Deserialize)]
+struct NodeLightRefDef {
+    light: usize,
+}
+
+#[derive(Deserialize)]
+struct RootExtensionsDef {
+    #[serde(rename = "KHR_lights_punctual", default)]
+    lights: Option<RootLightsDef>,
+}
+
+#[derive(Deserialize)]
+struct RootLightsDef {
+    #[serde(default)]
+    lights: Vec<PunctualLightDef>,
+}
+
+#[derive(Deserialize)]
+struct PunctualLightDef {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default)]
+    color: Option<[f32; 3]>,
+    #[serde(default)]
+    intensity: Option<f32>,
+}
+
+#[derive(Deserialize)]
+struct CameraDef {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default)]
+    perspective: Option<PerspectiveCameraDef>,
+    #[serde(default)]
+    orthographic: Option<OrthographicCameraDef>,
+}
+
+#[derive(Deserialize)]
+struct PerspectiveCameraDef {
+    yfov: f32,
+    znear: f32,
+    #[serde(default)]
+    zfar: Option<f32>,
+}
+
+#[derive(Deserialize)]
+struct OrthographicCameraDef {
+    #[serde(rename = "xmag")]
+    _xmag: f32,
+    ymag: f32,
+    znear: f32,
+    zfar: f32,
 }
 
 #[derive(Deserialize)]
@@ -501,6 +623,72 @@ fn read_accessor_vec4(
     Ok(out)
 }
 
+fn read_accessor_color4(
+    root: &GltfRoot,
+    buffers: &[Vec<u8>],
+    accessor_index: usize,
+) -> Result<Vec<Vec4>, GltfError> {
+    let layout = accessor_layout(root, buffers, accessor_index)?;
+    let comps = match layout.accessor.kind.as_str() {
+        "VEC3" => 3usize,
+        "VEC4" => 4usize,
+        _ => return Err(GltfError::UnsupportedAccessor),
+    };
+    let mut out = Vec::with_capacity(layout.count);
+    match layout.accessor.component_type {
+        5126 => {
+            for i in 0..layout.count {
+                let e = accessor_elem(&layout, i)?;
+                let x = read_f32_le(&e[0..4]);
+                let y = read_f32_le(&e[4..8]);
+                let z = read_f32_le(&e[8..12]);
+                let w = if comps == 4 {
+                    read_f32_le(&e[12..16])
+                } else {
+                    1.0
+                };
+                out.push(Vec4::new(x, y, z, w));
+            }
+        }
+        5121 => {
+            if !layout.accessor.normalized {
+                return Err(GltfError::UnsupportedAccessor);
+            }
+            for i in 0..layout.count {
+                let e = accessor_elem(&layout, i)?;
+                let x = f32::from(e[0]) / 255.0;
+                let y = f32::from(e[1]) / 255.0;
+                let z = f32::from(e[2]) / 255.0;
+                let w = if comps == 4 {
+                    f32::from(e[3]) / 255.0
+                } else {
+                    1.0
+                };
+                out.push(Vec4::new(x, y, z, w));
+            }
+        }
+        5123 => {
+            if !layout.accessor.normalized {
+                return Err(GltfError::UnsupportedAccessor);
+            }
+            for i in 0..layout.count {
+                let e = accessor_elem(&layout, i)?;
+                let x = f32::from(read_u16_le(&e[0..2])) / 65535.0;
+                let y = f32::from(read_u16_le(&e[2..4])) / 65535.0;
+                let z = f32::from(read_u16_le(&e[4..6])) / 65535.0;
+                let w = if comps == 4 {
+                    f32::from(read_u16_le(&e[6..8])) / 65535.0
+                } else {
+                    1.0
+                };
+                out.push(Vec4::new(x, y, z, w));
+            }
+        }
+        _ => return Err(GltfError::UnsupportedAccessor),
+    }
+    Ok(out)
+}
+
 fn read_accessor_mat4(
     root: &GltfRoot,
     buffers: &[Vec<u8>],
@@ -684,6 +872,12 @@ fn primitive_to_mesh(
         Vec::new()
     };
 
+    let colors = if let Some(c0) = primitive.attributes.get("COLOR_0") {
+        read_accessor_color4(root, buffers, *c0)?
+    } else {
+        Vec::new()
+    };
+
     let index_data = if let Some(idx_accessor) = primitive.indices {
         read_accessor_indices(root, buffers, idx_accessor)?
     } else {
@@ -704,10 +898,15 @@ fn primitive_to_mesh(
     mesh.positions = positions;
     mesh.normals = normals;
     mesh.uvs = uvs;
+    mesh.colors = colors;
     mesh.indices = index_data
         .chunks_exact(3)
         .map(|c| [c[0], c[1], c[2]])
         .collect();
+
+    if !mesh.colors.is_empty() && mesh.colors.len() != mesh.positions.len() {
+        return Err(GltfError::UnsupportedAccessor);
+    }
 
     if mesh.normals.is_empty() {
         mesh.ensure_normals();
@@ -793,16 +992,83 @@ fn world_to_transform(world: Mat4) -> Result<Transform, GltfError> {
     Ok(Transform::new(translation, rotation.normalize(), scale))
 }
 
+fn apply_world_to_mesh(mesh: &mut Mesh, world: Mat4) -> Result<(), GltfError> {
+    if !world.is_finite() {
+        return Err(GltfError::InvalidTransform);
+    }
+    let normal_m = Mat3::from_mat4(world).inverse().transpose();
+    for p in &mut mesh.positions {
+        *p = (world * p.extend(1.0)).truncate();
+    }
+    if !mesh.normals.is_empty() {
+        for n in &mut mesh.normals {
+            let nn = if normal_m.is_finite() {
+                (normal_m * *n).normalize_or_zero()
+            } else {
+                (Mat3::from_mat4(world) * *n).normalize_or_zero()
+            };
+            *n = nn;
+        }
+    }
+    Ok(())
+}
+
 fn default_material_binding() -> MaterialBinding {
     let mut material = Material::default();
     material.kd = Vec3::ONE;
     material.alpha = 1.0;
+    material.alpha_mode = AlphaMode::Opaque;
+    material.alpha_cutoff = 0.5;
+    material.double_sided = false;
     material.map_kd = None;
     material.map_kd_path = None;
+    material.map_kd_uv_transform = Mat3::IDENTITY;
     MaterialBinding {
         material,
         texcoord_set: 0,
     }
+}
+
+fn parse_alpha_mode(s: Option<&str>) -> AlphaMode {
+    match s.unwrap_or("OPAQUE") {
+        "MASK" => AlphaMode::Mask,
+        "BLEND" => AlphaMode::Blend,
+        _ => AlphaMode::Opaque,
+    }
+}
+
+fn texture_uv_transform(tex_info: &TextureInfoDef) -> (usize, Mat3) {
+    let mut texcoord = tex_info.tex_coord.unwrap_or(0);
+    let mut offset = Vec2::ZERO;
+    let mut scale = Vec2::ONE;
+    let mut rotation = 0.0f32;
+    if let Some(ext) = tex_info
+        .extensions
+        .as_ref()
+        .and_then(|e| e.texture_transform.as_ref())
+    {
+        if let Some(uv_set) = ext.tex_coord {
+            texcoord = uv_set;
+        }
+        if let Some(v) = ext.offset {
+            offset = Vec2::new(v[0], v[1]);
+        }
+        if let Some(v) = ext.scale {
+            scale = Vec2::new(v[0], v[1]);
+        }
+        if let Some(v) = ext.rotation {
+            rotation = v;
+        }
+    }
+
+    let c = rotation.cos();
+    let s = rotation.sin();
+    let transform = Mat3::from_cols(
+        Vec3::new(scale.x * c, scale.x * s, 0.0),
+        Vec3::new(-scale.y * s, scale.y * c, 0.0),
+        Vec3::new(offset.x, offset.y, 1.0),
+    );
+    (texcoord, transform)
 }
 
 fn srgb_to_linear_u8(v: u8) -> u8 {
@@ -920,21 +1186,28 @@ fn parse_wrap_mode(v: Option<u32>) -> TextureWrapMode {
     }
 }
 
-fn parse_mag_filter(v: Option<u32>) -> TextureFilter {
+fn parse_mag_filter(v: Option<u32>) -> TextureMagFilter {
     match v.unwrap_or(9_729) {
-        9_728 => TextureFilter::Nearest,
-        _ => TextureFilter::Linear,
+        9_728 => TextureMagFilter::Nearest,
+        _ => TextureMagFilter::Linear,
     }
 }
 
-fn parse_min_filter(v: Option<u32>) -> TextureFilter {
+fn parse_min_filter(v: Option<u32>) -> TextureMinFilter {
     match v.unwrap_or(9_987) {
-        9_728 | 9_984 | 9_986 => TextureFilter::Nearest,
-        _ => TextureFilter::Linear,
+        9_728 => TextureMinFilter::Nearest,
+        9_729 => TextureMinFilter::Linear,
+        9_984 => TextureMinFilter::NearestMipmapNearest,
+        9_985 => TextureMinFilter::LinearMipmapNearest,
+        9_986 => TextureMinFilter::NearestMipmapLinear,
+        _ => TextureMinFilter::LinearMipmapLinear,
     }
 }
 
-fn texture_sampler_for_texture(root: &GltfRoot, texture_index: usize) -> Result<TextureSampler, GltfError> {
+fn texture_sampler_for_texture(
+    root: &GltfRoot,
+    texture_index: usize,
+) -> Result<TextureSampler, GltfError> {
     let tex_def = root
         .textures
         .get(texture_index)
@@ -979,6 +1252,7 @@ fn ensure_base_color_texture_handle(
     let bytes = load_image_bytes(root, buffers, base_dir, image_index)?;
     let mut texture = load_texture_rgba8_from_bytes_raw(&bytes).map_err(map_texture_io_error)?;
     linearize_base_color_texture(&mut texture);
+    texture.rebuild_mipmaps();
     texture.sampler = sampler;
     let handle = scene.add_texture(texture);
     *slot = Some(handle);
@@ -995,7 +1269,23 @@ fn build_material_bindings(
     let mut out = Vec::with_capacity(root.materials.len());
 
     for material in &root.materials {
+        if material.normal_texture.is_some()
+            || material.occlusion_texture.is_some()
+            || material.emissive_texture.is_some()
+        {
+            return Err(GltfError::UnsupportedMaterialFeature);
+        }
         let mut binding = default_material_binding();
+        binding.material.alpha_mode = parse_alpha_mode(material.alpha_mode.as_deref());
+        binding.material.alpha_cutoff = material.alpha_cutoff.unwrap_or(0.5).clamp(0.0, 1.0);
+        binding.material.double_sided = material.double_sided.unwrap_or(false);
+        if let Some(ke) = material.emissive_factor {
+            binding.material.ke = Vec3::new(
+                ke[0].clamp(0.0, 1.0),
+                ke[1].clamp(0.0, 1.0),
+                ke[2].clamp(0.0, 1.0),
+            );
+        }
 
         if let Some(pbr) = &material.pbr_metallic_roughness {
             let factor = pbr.base_color_factor.unwrap_or([1.0, 1.0, 1.0, 1.0]);
@@ -1005,6 +1295,15 @@ fn build_material_bindings(
                 factor[2].clamp(0.0, 1.0),
             );
             binding.material.alpha = factor[3].clamp(0.0, 1.0);
+
+            let metallic = pbr.metallic_factor.unwrap_or(1.0).clamp(0.0, 1.0);
+            let roughness = pbr.roughness_factor.unwrap_or(1.0).clamp(0.045, 1.0);
+            binding.material.ks = Vec3::splat(0.04).lerp(binding.material.kd, metallic);
+            binding.material.ns = ((2.0 / (roughness * roughness)) - 2.0).clamp(1.0, 1024.0);
+
+            if pbr.metallic_roughness_texture.is_some() {
+                return Err(GltfError::UnsupportedMaterialFeature);
+            }
 
             if let Some(tex_info) = &pbr.base_color_texture {
                 let handle = ensure_base_color_texture_handle(
@@ -1016,7 +1315,9 @@ fn build_material_bindings(
                     tex_info.index,
                 )?;
                 binding.material.map_kd = Some(handle);
-                binding.texcoord_set = tex_info.tex_coord.unwrap_or(0);
+                let (texcoord_set, uv_transform) = texture_uv_transform(tex_info);
+                binding.texcoord_set = texcoord_set;
+                binding.material.map_kd_uv_transform = uv_transform;
             }
         }
 
@@ -1487,6 +1788,139 @@ fn sample_animation_locals(
     Ok(locals)
 }
 
+fn camera_projection_from_def(def: &CameraDef) -> Option<Projection> {
+    match def.kind.as_str() {
+        "perspective" => {
+            let p = def.perspective.as_ref()?;
+            if !(p.yfov.is_finite() && p.znear.is_finite() && p.znear > 0.0) {
+                return None;
+            }
+            let far = p.zfar.unwrap_or(1000.0);
+            if !(far.is_finite() && far > p.znear) {
+                return None;
+            }
+            Some(Projection::Perspective {
+                fov_y_radians: p.yfov,
+                near: p.znear,
+                far,
+            })
+        }
+        "orthographic" => {
+            let o = def.orthographic.as_ref()?;
+            if !(o.ymag.is_finite()
+                && o.znear.is_finite()
+                && o.zfar.is_finite()
+                && o.zfar > o.znear)
+            {
+                return None;
+            }
+            Some(Projection::Orthographic {
+                half_height: o.ymag,
+                near: o.znear,
+                far: o.zfar,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn apply_cameras_and_lights(
+    scene: &mut Scene,
+    root: &GltfRoot,
+    world_matrices: &[Mat4],
+    selected_scene_nodes: Option<&[usize]>,
+) {
+    let candidate_nodes: Vec<usize> = if let Some(nodes) = selected_scene_nodes {
+        let mut out = Vec::new();
+        let mut stack: Vec<usize> = nodes.to_vec();
+        while let Some(n) = stack.pop() {
+            if out.contains(&n) {
+                continue;
+            }
+            out.push(n);
+            if let Some(node) = root.nodes.get(n) {
+                for &c in &node.children {
+                    stack.push(c);
+                }
+            }
+        }
+        out
+    } else {
+        (0..root.nodes.len()).collect()
+    };
+
+    for &node_index in &candidate_nodes {
+        let Some(node) = root.nodes.get(node_index) else {
+            continue;
+        };
+        let Some(camera_index) = node.camera else {
+            continue;
+        };
+        let Some(camera_def) = root.cameras.get(camera_index) else {
+            continue;
+        };
+        let Some(projection) = camera_projection_from_def(camera_def) else {
+            continue;
+        };
+        let Some(world) = world_matrices.get(node_index).copied() else {
+            continue;
+        };
+        if let Ok(transform) = world_to_transform(world) {
+            scene.camera = Camera::new(transform, projection);
+            break;
+        }
+    }
+
+    let Some(root_lights) = root
+        .extensions
+        .as_ref()
+        .and_then(|e| e.lights.as_ref())
+        .map(|l| &l.lights)
+    else {
+        return;
+    };
+
+    for &node_index in &candidate_nodes {
+        let Some(node) = root.nodes.get(node_index) else {
+            continue;
+        };
+        let Some(light_ref) = node
+            .extensions
+            .as_ref()
+            .and_then(|e| e.lights.as_ref())
+            .map(|r| r.light)
+        else {
+            continue;
+        };
+        let Some(light_def) = root_lights.get(light_ref) else {
+            continue;
+        };
+        let Some(world) = world_matrices.get(node_index).copied() else {
+            continue;
+        };
+        let color_arr = light_def.color.unwrap_or([1.0, 1.0, 1.0]);
+        let color =
+            Vec3::new(color_arr[0], color_arr[1], color_arr[2]).clamp(Vec3::ZERO, Vec3::ONE);
+        let intensity = light_def.intensity.unwrap_or(1.0).max(0.0);
+
+        match light_def.kind.as_str() {
+            "directional" => {
+                let dir = (world * Vec4::new(0.0, 0.0, -1.0, 0.0))
+                    .truncate()
+                    .normalize_or_zero();
+                if dir.length_squared() > 0.0 {
+                    scene.add_light(Light::directional(dir, color, intensity));
+                }
+            }
+            "point" => {
+                let pos = (world * Vec4::new(0.0, 0.0, 0.0, 1.0)).truncate();
+                scene.add_light(Light::point(pos, color, intensity));
+            }
+            _ => {}
+        }
+    }
+}
+
 fn build_scene(
     root: &GltfRoot,
     buffers: &[Vec<u8>],
@@ -1568,7 +2002,6 @@ fn build_scene(
             let primitives = per_mesh_primitives
                 .get(mesh_index)
                 .ok_or(GltfError::InvalidIndex)?;
-            let xf = world_to_transform(world)?;
 
             if let Some(skin_index) = node.skin {
                 let skin = loaded_skins
@@ -1579,11 +2012,14 @@ fn build_scene(
                     let skinning = prim.skinning.as_ref().ok_or(GltfError::MissingAttribute)?;
                     let mut mesh = prim.mesh.clone();
                     skin_mesh_in_place(&mut mesh, skinning, &joint_matrices)?;
-                    let _ = scene.add_object(mesh, xf, prim.material.clone());
+                    apply_world_to_mesh(&mut mesh, world)?;
+                    let _ = scene.add_object(mesh, Transform::IDENTITY, prim.material.clone());
                 }
             } else {
                 for prim in primitives {
-                    let _ = scene.add_object(prim.mesh.clone(), xf, prim.material.clone());
+                    let mut mesh = prim.mesh.clone();
+                    apply_world_to_mesh(&mut mesh, world)?;
+                    let _ = scene.add_object(mesh, Transform::IDENTITY, prim.material.clone());
                 }
             }
         }
@@ -1620,6 +2056,7 @@ fn build_scene(
                 &mut scene,
             )?;
         }
+        apply_cameras_and_lights(&mut scene, root, &world_matrices, None);
         return Ok(scene);
     }
 
@@ -1641,6 +2078,7 @@ fn build_scene(
             &mut scene,
         )?;
     }
+    apply_cameras_and_lights(&mut scene, root, &world_matrices, Some(&selected.nodes));
     Ok(scene)
 }
 
@@ -1712,8 +2150,8 @@ pub fn load_gltf_str_at_time(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::texture::{TextureMagFilter, TextureMinFilter, TextureWrapMode};
     use crate::{Camera, DebugView, Projection, Renderer, RendererConfig};
-    use crate::texture::{TextureFilter, TextureWrapMode};
 
     fn tiny_gltf_inline() -> String {
         let mut bytes = Vec::new();
@@ -2097,7 +2535,9 @@ mod tests {
             saw = true;
             assert_eq!(mesh.indices.len(), 1);
             assert_eq!(mesh.positions.len(), 3);
-            assert!((xf.translation.x - 0.5).abs() < 1e-6);
+            assert!(xf.translation.length() < 1e-6);
+            let centroid = (mesh.positions[0] + mesh.positions[1] + mesh.positions[2]) / 3.0;
+            assert!((centroid.x - 0.5).abs() < 1e-6);
         }
         assert!(saw);
     }
@@ -2152,7 +2592,7 @@ mod tests {
         let mut img = crate::targets::ImageTarget::new(32, 32);
         renderer.render_image(&scene, &mut img);
 
-        const EXPECTED: u64 = 4_394_196_463_351_269_805;
+        const EXPECTED: u64 = 14_200_097_390_887_458_853;
         assert_eq!(img.hash64(), EXPECTED);
     }
 
@@ -2165,8 +2605,8 @@ mod tests {
         let tex = scene.texture(h).unwrap();
         assert_eq!(tex.sampler.wrap_s, TextureWrapMode::ClampToEdge);
         assert_eq!(tex.sampler.wrap_t, TextureWrapMode::MirroredRepeat);
-        assert_eq!(tex.sampler.mag_filter, TextureFilter::Nearest);
-        assert_eq!(tex.sampler.min_filter, TextureFilter::Linear);
+        assert_eq!(tex.sampler.mag_filter, TextureMagFilter::Nearest);
+        assert_eq!(tex.sampler.min_filter, TextureMinFilter::LinearMipmapLinear);
     }
 
     #[test]
@@ -2189,12 +2629,22 @@ mod tests {
         }
 
         let mut x_a = None;
-        for (_mesh, _mat, xf) in scene_a.iter_objects() {
-            x_a = Some(xf.translation.x);
+        for (mesh, _mat, xf) in scene_a.iter_objects() {
+            assert!(xf.translation.length() < 1e-6);
+            let mut c = Vec3::ZERO;
+            for p in &mesh.positions {
+                c += *p;
+            }
+            x_a = Some(c.x / mesh.positions.len() as f32);
         }
         let mut x_b = None;
-        for (_mesh, _mat, xf) in scene_b.iter_objects() {
-            x_b = Some(xf.translation.x);
+        for (mesh, _mat, xf) in scene_b.iter_objects() {
+            assert!(xf.translation.length() < 1e-6);
+            let mut c = Vec3::ZERO;
+            for p in &mesh.positions {
+                c += *p;
+            }
+            x_b = Some(c.x / mesh.positions.len() as f32);
         }
         assert!((x_a.unwrap() + 0.45).abs() < 1e-6);
         assert!((x_b.unwrap() - 0.45).abs() < 1e-6);

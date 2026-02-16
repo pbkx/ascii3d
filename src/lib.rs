@@ -30,7 +30,7 @@ pub use crate::{
     gbuffer::GBuffer,
     glyph::{AsciiRamp, GlyphMode},
     light::Light,
-    material::Material,
+    material::{AlphaMode, Material},
     mesh::Mesh,
     profile::RenderStats,
     renderer::{Renderer, RendererConfig},

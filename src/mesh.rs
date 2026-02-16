@@ -1,4 +1,4 @@
-use glam::{Vec2, Vec3};
+use glam::{Vec2, Vec3, Vec4};
 use std::fmt;
 
 pub type Tri = [u32; 3];
@@ -14,12 +14,19 @@ pub enum MeshValidationError {
     UvNotFinite {
         index: usize,
     },
+    ColorNotFinite {
+        index: usize,
+    },
     NormalsLenMismatch {
         normals: usize,
         positions: usize,
     },
     UvsLenMismatch {
         uvs: usize,
+        positions: usize,
+    },
+    ColorsLenMismatch {
+        colors: usize,
         positions: usize,
     },
     TriangleIndexOutOfBounds {
@@ -41,11 +48,17 @@ impl fmt::Display for MeshValidationError {
             MeshValidationError::UvNotFinite { index } => {
                 write!(f, "uv_not_finite:{index}")
             }
+            MeshValidationError::ColorNotFinite { index } => {
+                write!(f, "color_not_finite:{index}")
+            }
             MeshValidationError::NormalsLenMismatch { normals, positions } => {
                 write!(f, "normals_len_mismatch:{normals}:{positions}")
             }
             MeshValidationError::UvsLenMismatch { uvs, positions } => {
                 write!(f, "uvs_len_mismatch:{uvs}:{positions}")
+            }
+            MeshValidationError::ColorsLenMismatch { colors, positions } => {
+                write!(f, "colors_len_mismatch:{colors}:{positions}")
             }
             MeshValidationError::TriangleIndexOutOfBounds {
                 tri,
@@ -66,6 +79,7 @@ pub struct Mesh {
     pub indices: Vec<Tri>,
     pub normals: Vec<Vec3>,
     pub uvs: Vec<Vec2>,
+    pub colors: Vec<Vec4>,
 }
 
 impl Mesh {
@@ -93,6 +107,11 @@ impl Mesh {
         self
     }
 
+    pub fn with_colors(mut self, colors: Vec<Vec4>) -> Self {
+        self.colors = colors;
+        self
+    }
+
     pub fn push_triangle(&mut self, i0: u32, i1: u32, i2: u32) {
         self.indices.push([i0, i1, i2]);
     }
@@ -109,6 +128,7 @@ impl Mesh {
             indices,
             normals: Vec::new(),
             uvs: Vec::new(),
+            colors: Vec::new(),
         }
     }
 
@@ -144,6 +164,7 @@ impl Mesh {
             indices,
             normals: Vec::new(),
             uvs: Vec::new(),
+            colors: Vec::new(),
         }
     }
 
@@ -181,6 +202,18 @@ impl Mesh {
         for (i, uv) in self.uvs.iter().enumerate() {
             if !(uv.x.is_finite() && uv.y.is_finite()) {
                 return Err(MeshValidationError::UvNotFinite { index: i });
+            }
+        }
+
+        if !self.colors.is_empty() && self.colors.len() != self.positions.len() {
+            return Err(MeshValidationError::ColorsLenMismatch {
+                colors: self.colors.len(),
+                positions: self.positions.len(),
+            });
+        }
+        for (i, c) in self.colors.iter().enumerate() {
+            if !(c.x.is_finite() && c.y.is_finite() && c.z.is_finite() && c.w.is_finite()) {
+                return Err(MeshValidationError::ColorNotFinite { index: i });
             }
         }
 

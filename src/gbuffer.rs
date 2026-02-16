@@ -3,6 +3,7 @@ use glam::Vec3;
 #[derive(Debug, Clone, Copy)]
 pub struct GBufferPixel {
     pub depth: f32,
+    pub view_pos: Vec3,
     pub normal: Vec3,
     pub kd: Vec3,
     pub ks: Vec3,
@@ -15,6 +16,9 @@ pub struct GBuffer {
     width: usize,
     height: usize,
     depth: Vec<f32>,
+    vx: Vec<f32>,
+    vy: Vec<f32>,
+    vz: Vec<f32>,
     nx: Vec<f32>,
     ny: Vec<f32>,
     nz: Vec<f32>,
@@ -27,6 +31,9 @@ pub struct GBuffer {
 #[cfg(feature = "rayon")]
 pub(crate) struct GBufferSlicesMut<'a> {
     pub depth: &'a mut [f32],
+    pub vx: &'a mut [f32],
+    pub vy: &'a mut [f32],
+    pub vz: &'a mut [f32],
     pub nx: &'a mut [f32],
     pub ny: &'a mut [f32],
     pub nz: &'a mut [f32],
@@ -45,6 +52,9 @@ impl GBuffer {
             width,
             height,
             depth: vec![0.0; n],
+            vx: vec![0.0; n],
+            vy: vec![0.0; n],
+            vz: vec![0.0; n],
             nx: vec![0.0; n],
             ny: vec![0.0; n],
             nz: vec![0.0; n],
@@ -71,6 +81,9 @@ impl GBuffer {
             .checked_mul(self.height)
             .expect("GBuffer size overflow");
         self.depth.fill(f32::INFINITY);
+        self.vx.fill(0.0);
+        self.vy.fill(0.0);
+        self.vz.fill(0.0);
         self.nx.fill(0.0);
         self.ny.fill(0.0);
         self.nz.fill(0.0);
@@ -79,6 +92,9 @@ impl GBuffer {
         self.ns.fill(0.0);
         self.ke.fill(Vec3::ZERO);
         debug_assert_eq!(self.depth.len(), n);
+        debug_assert_eq!(self.vx.len(), n);
+        debug_assert_eq!(self.vy.len(), n);
+        debug_assert_eq!(self.vz.len(), n);
         debug_assert_eq!(self.nx.len(), n);
         debug_assert_eq!(self.ny.len(), n);
         debug_assert_eq!(self.nz.len(), n);
@@ -101,17 +117,22 @@ impl GBuffer {
         x: usize,
         y: usize,
         depth: f32,
+        view_pos: Vec3,
         normal: Vec3,
         kd: Vec3,
         ks: Vec3,
         ns: f32,
         ke: Vec3,
     ) -> bool {
+        const DEPTH_TEST_EPS: f32 = 1e-6;
         let Some(i) = self.idx(x, y) else {
             return false;
         };
-        if depth < self.depth[i] {
+        if depth <= self.depth[i] + DEPTH_TEST_EPS {
             self.depth[i] = depth;
+            self.vx[i] = view_pos.x;
+            self.vy[i] = view_pos.y;
+            self.vz[i] = view_pos.z;
             self.nx[i] = normal.x;
             self.ny[i] = normal.y;
             self.nz[i] = normal.z;
@@ -129,6 +150,7 @@ impl GBuffer {
         let i = self.idx(x, y)?;
         Some(GBufferPixel {
             depth: self.depth[i],
+            view_pos: Vec3::new(self.vx[i], self.vy[i], self.vz[i]),
             normal: Vec3::new(self.nx[i], self.ny[i], self.nz[i]),
             kd: self.kd[i],
             ks: self.ks[i],
@@ -208,6 +230,9 @@ impl GBuffer {
 
         let n = self.width.saturating_mul(self.height);
         debug_assert_eq!(self.depth.len(), n);
+        debug_assert_eq!(self.vx.len(), n);
+        debug_assert_eq!(self.vy.len(), n);
+        debug_assert_eq!(self.vz.len(), n);
         debug_assert_eq!(self.nx.len(), n);
         debug_assert_eq!(self.ny.len(), n);
         debug_assert_eq!(self.nz.len(), n);
@@ -218,6 +243,9 @@ impl GBuffer {
 
         for i in 0..n {
             h = mix_f32(h, self.depth[i]);
+            h = mix_f32(h, self.vx[i]);
+            h = mix_f32(h, self.vy[i]);
+            h = mix_f32(h, self.vz[i]);
             h = mix_f32(h, self.nx[i]);
             h = mix_f32(h, self.ny[i]);
             h = mix_f32(h, self.nz[i]);
@@ -234,6 +262,9 @@ impl GBuffer {
     pub(crate) fn slices_mut(&mut self) -> GBufferSlicesMut<'_> {
         GBufferSlicesMut {
             depth: &mut self.depth,
+            vx: &mut self.vx,
+            vy: &mut self.vy,
+            vz: &mut self.vz,
             nx: &mut self.nx,
             ny: &mut self.ny,
             nz: &mut self.nz,

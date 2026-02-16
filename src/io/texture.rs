@@ -25,6 +25,7 @@ impl Error for TextureIoError {}
 pub fn load_texture_rgba8(path: impl AsRef<Path>) -> Result<Texture, TextureIoError> {
     let mut tex = load_texture_rgba8_raw(path)?;
     linearize_rgb_in_place(&mut tex);
+    tex.rebuild_mipmaps();
     Ok(tex)
 }
 
@@ -37,6 +38,7 @@ pub fn load_texture_rgba8_raw(path: impl AsRef<Path>) -> Result<Texture, Texture
 pub fn load_texture_rgba8_from_bytes(bytes: &[u8]) -> Result<Texture, TextureIoError> {
     let mut tex = load_texture_rgba8_from_bytes_raw(bytes)?;
     linearize_rgb_in_place(&mut tex);
+    tex.rebuild_mipmaps();
     Ok(tex)
 }
 

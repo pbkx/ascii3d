@@ -1,6 +1,7 @@
-use glam::{Mat4, Vec2, Vec3, Vec4};
+use glam::{Mat3, Mat4, Vec2, Vec3, Vec4};
 
-use crate::{Camera, GBuffer, Material, Scene, Texture, TextureHandle};
+use crate::texture::TextureSampleFootprint;
+use crate::{AlphaMode, Camera, GBuffer, Material, Scene, Texture, TextureHandle};
 
 use std::cell::RefCell;
 
@@ -15,7 +16,9 @@ type ClipVert = (Vertex, Vec4);
 #[derive(Copy, Clone, Debug)]
 struct Vertex {
     pos: Vec3,
+    view_pos: Vec3,
     nrm: Vec3,
+    color: Vec4,
     uv: Vec2,
     inv_w: f32,
 }
@@ -37,9 +40,14 @@ struct TiledTri {
     b: Vertex,
     c: Vertex,
     kd: Vec3,
+    alpha: f32,
+    alpha_mode: AlphaMode,
+    alpha_cutoff: f32,
+    double_sided: bool,
     ks: Vec3,
     ns: f32,
     ke: Vec3,
+    uv_transform: Mat3,
     map_kd: Option<TextureHandle>,
 }
 
@@ -102,10 +110,9 @@ thread_local! {
 }
 
 fn project_to_screen(pos: Vec3, width: u32, height: u32) -> Vec2 {
-    Vec2::new(
-        (pos.x * 0.5 + 0.5) * (width.saturating_sub(1) as f32),
-        (1.0 - (pos.y * 0.5 + 0.5)) * (height.saturating_sub(1) as f32),
-    )
+    let w = width.max(1) as f32;
+    let h = height.max(1) as f32;
+    Vec2::new((pos.x * 0.5 + 0.5) * w, (1.0 - (pos.y * 0.5 + 0.5)) * h)
 }
 
 fn edge(a: Vec2, b: Vec2, c: Vec2) -> f32 {
@@ -119,30 +126,98 @@ fn perspective_denom(w0: f32, w1: f32, w2: f32, v0: Vertex, v1: Vertex, v2: Vert
 fn interpolate_normal(w0: f32, w1: f32, w2: f32, v0: Vertex, v1: Vertex, v2: Vertex) -> Vec3 {
     let denom = perspective_denom(w0, w1, w2, v0, v1, v2);
     if denom.abs() > 1e-8 {
-        ((v0.nrm * (w0 * v0.inv_w) + v1.nrm * (w1 * v1.inv_w) + v2.nrm * (w2 * v2.inv_w))
-            / denom)
+        ((v0.nrm * (w0 * v0.inv_w) + v1.nrm * (w1 * v1.inv_w) + v2.nrm * (w2 * v2.inv_w)) / denom)
             .normalize_or_zero()
     } else {
         (w0 * v0.nrm + w1 * v1.nrm + w2 * v2.nrm).normalize_or_zero()
     }
 }
 
-fn interpolate_uv(
-    w0: f32,
-    w1: f32,
-    w2: f32,
+fn interpolate_uv(w0: f32, w1: f32, w2: f32, v0: Vertex, v1: Vertex, v2: Vertex) -> Option<Vec2> {
+    let denom = perspective_denom(w0, w1, w2, v0, v1, v2);
+    if denom.abs() > 1e-8 {
+        Some((v0.uv * (w0 * v0.inv_w) + v1.uv * (w1 * v1.inv_w) + v2.uv * (w2 * v2.inv_w)) / denom)
+    } else {
+        None
+    }
+}
+
+fn interpolate_color(w0: f32, w1: f32, w2: f32, v0: Vertex, v1: Vertex, v2: Vertex) -> Vec4 {
+    let denom = perspective_denom(w0, w1, w2, v0, v1, v2);
+    if denom.abs() > 1e-8 {
+        (v0.color * (w0 * v0.inv_w) + v1.color * (w1 * v1.inv_w) + v2.color * (w2 * v2.inv_w))
+            / denom
+    } else {
+        v0.color * w0 + v1.color * w1 + v2.color * w2
+    }
+}
+
+fn transform_uv(uv: Vec2, uv_transform: Mat3) -> Vec2 {
+    let t = uv_transform * uv.extend(1.0);
+    Vec2::new(t.x, t.y)
+}
+
+fn interpolate_view_pos(w0: f32, w1: f32, w2: f32, v0: Vertex, v1: Vertex, v2: Vertex) -> Vec3 {
+    let denom = perspective_denom(w0, w1, w2, v0, v1, v2);
+    if denom.abs() > 1e-8 {
+        (v0.view_pos * (w0 * v0.inv_w)
+            + v1.view_pos * (w1 * v1.inv_w)
+            + v2.view_pos * (w2 * v2.inv_w))
+            / denom
+    } else {
+        w0 * v0.view_pos + w1 * v1.view_pos + w2 * v2.view_pos
+    }
+}
+
+fn uv_footprint(
+    sample: Vec2,
+    area: f32,
+    s0: Vec2,
+    s1: Vec2,
+    s2: Vec2,
     v0: Vertex,
     v1: Vertex,
     v2: Vertex,
-) -> Option<Vec2> {
-    let denom = perspective_denom(w0, w1, w2, v0, v1, v2);
-    if denom.abs() > 1e-8 {
-        Some(
-            (v0.uv * (w0 * v0.inv_w) + v1.uv * (w1 * v1.inv_w) + v2.uv * (w2 * v2.inv_w))
-                / denom,
-        )
+    uv: Vec2,
+    uv_transform: Mat3,
+) -> Option<TextureSampleFootprint> {
+    let sample_dx = sample + Vec2::new(1.0, 0.0);
+    let wx0 = edge(s1, s2, sample_dx) / area;
+    let wx1 = edge(s2, s0, sample_dx) / area;
+    let wx2 = edge(s0, s1, sample_dx) / area;
+    let uv_dx = transform_uv(interpolate_uv(wx0, wx1, wx2, v0, v1, v2)?, uv_transform);
+
+    let sample_dy = sample + Vec2::new(0.0, 1.0);
+    let wy0 = edge(s1, s2, sample_dy) / area;
+    let wy1 = edge(s2, s0, sample_dy) / area;
+    let wy2 = edge(s0, s1, sample_dy) / area;
+    let uv_dy = transform_uv(interpolate_uv(wy0, wy1, wy2, v0, v1, v2)?, uv_transform);
+    let uv = transform_uv(uv, uv_transform);
+
+    Some(TextureSampleFootprint {
+        ddx_uv: uv_dx - uv,
+        ddy_uv: uv_dy - uv,
+    })
+}
+
+fn is_top_left_edge(a: Vec2, b: Vec2) -> bool {
+    let dy = b.y - a.y;
+    let dx = b.x - a.x;
+    dy > 0.0 || (dy.abs() <= 1e-8 && dx < 0.0)
+}
+
+fn edge_is_inside(e: f32, a: Vec2, b: Vec2, area_sign: f32) -> bool {
+    let ee = e * area_sign;
+    if ee > 1e-8 {
+        true
+    } else if ee >= -1e-8 {
+        if area_sign >= 0.0 {
+            is_top_left_edge(a, b)
+        } else {
+            is_top_left_edge(b, a)
+        }
     } else {
-        None
+        false
     }
 }
 
@@ -169,13 +244,17 @@ fn clip_edge(
         0.0
     };
     let pos = vert_a.pos + t_param * (vert_b.pos - vert_a.pos);
+    let view_pos = vert_a.view_pos + t_param * (vert_b.view_pos - vert_a.view_pos);
     let nrm = (vert_a.nrm + t_param * (vert_b.nrm - vert_a.nrm)).normalize_or_zero();
+    let color = vert_a.color + t_param * (vert_b.color - vert_a.color);
     let uv = vert_a.uv + t_param * (vert_b.uv - vert_a.uv);
     let pos_clip = pos_a + t_param * (pos_b - pos_a);
     (
         Vertex {
             pos,
+            view_pos,
             nrm,
+            color,
             uv,
             inv_w: 1.0,
         },
@@ -224,24 +303,71 @@ fn draw_tri(
     if area.abs() < 1e-8 {
         return;
     }
+    if !material.double_sided && area <= 0.0 {
+        return;
+    }
+    let area_sign = if area >= 0.0 { 1.0 } else { -1.0 };
 
     for y in min_y..=max_y {
         for x in min_x..=max_x {
             let sample = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
-            let w0 = edge(s1, s2, sample) / area;
-            let w1 = edge(s2, s0, sample) / area;
-            let w2 = edge(s0, s1, sample) / area;
-
-            if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
+            let e0 = edge(s1, s2, sample);
+            let e1 = edge(s2, s0, sample);
+            let e2 = edge(s0, s1, sample);
+            if !edge_is_inside(e0, s1, s2, area_sign)
+                || !edge_is_inside(e1, s2, s0, area_sign)
+                || !edge_is_inside(e2, s0, s1, area_sign)
+            {
                 continue;
             }
+            let w0 = e0 / area;
+            let w1 = e1 / area;
+            let w2 = e2 / area;
 
             let depth = w0 * v0.pos.z + w1 * v1.pos.z + w2 * v2.pos.z;
             let normal = interpolate_normal(w0, w1, w2, v0, v1, v2);
-            let mut kd = material.kd;
+            let view_pos = interpolate_view_pos(w0, w1, w2, v0, v1, v2);
+            let vertex_color =
+                interpolate_color(w0, w1, w2, v0, v1, v2).clamp(Vec4::ZERO, Vec4::ONE);
+            let mut kd = material.kd * vertex_color.truncate();
+            let mut alpha = (material.alpha * vertex_color.w).clamp(0.0, 1.0);
             if let Some(t) = tex {
-                if let Some(uv) = interpolate_uv(w0, w1, w2, v0, v1, v2) {
-                    kd *= t.sample(uv);
+                if let Some(raw_uv) = interpolate_uv(w0, w1, w2, v0, v1, v2) {
+                    let uv = transform_uv(raw_uv, material.map_kd_uv_transform);
+                    if let Some(fp) = uv_footprint(
+                        sample,
+                        area,
+                        s0,
+                        s1,
+                        s2,
+                        v0,
+                        v1,
+                        v2,
+                        raw_uv,
+                        material.map_kd_uv_transform,
+                    ) {
+                        let rgba = t.sample_rgba_with_footprint(uv, fp);
+                        kd *= rgba.truncate();
+                        alpha *= rgba.w.clamp(0.0, 1.0);
+                    } else {
+                        let rgba = t.sample_rgba(uv);
+                        kd *= rgba.truncate();
+                        alpha *= rgba.w.clamp(0.0, 1.0);
+                    }
+                }
+            }
+            match material.alpha_mode {
+                AlphaMode::Opaque => {}
+                AlphaMode::Mask => {
+                    if alpha < material.alpha_cutoff {
+                        continue;
+                    }
+                }
+                AlphaMode::Blend => {
+                    if alpha <= 0.0 {
+                        continue;
+                    }
+                    kd *= alpha;
                 }
             }
 
@@ -249,6 +375,7 @@ fn draw_tri(
                 x as usize,
                 y as usize,
                 depth,
+                view_pos,
                 normal,
                 kd,
                 material.ks,
@@ -266,9 +393,14 @@ fn draw_tri_params_clamped(
     v1: Vertex,
     v2: Vertex,
     kd_base: Vec3,
+    alpha_base: f32,
+    alpha_mode: AlphaMode,
+    alpha_cutoff: f32,
+    double_sided: bool,
     ks: Vec3,
     ns: f32,
     ke: Vec3,
+    uv_transform: Mat3,
     tex: Option<&Texture>,
     clamp_min_x: i32,
     clamp_max_x: i32,
@@ -305,30 +437,68 @@ fn draw_tri_params_clamped(
     if area.abs() < 1e-8 {
         return;
     }
+    if !double_sided && area <= 0.0 {
+        return;
+    }
+    let area_sign = if area >= 0.0 { 1.0 } else { -1.0 };
 
     for y in min_y..=max_y {
         for x in min_x..=max_x {
             let sample = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
-            let w0 = edge(s1, s2, sample) / area;
-            let w1 = edge(s2, s0, sample) / area;
-            let w2 = edge(s0, s1, sample) / area;
-
-            if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
+            let e0 = edge(s1, s2, sample);
+            let e1 = edge(s2, s0, sample);
+            let e2 = edge(s0, s1, sample);
+            if !edge_is_inside(e0, s1, s2, area_sign)
+                || !edge_is_inside(e1, s2, s0, area_sign)
+                || !edge_is_inside(e2, s0, s1, area_sign)
+            {
                 continue;
             }
+            let w0 = e0 / area;
+            let w1 = e1 / area;
+            let w2 = e2 / area;
 
             let depth = w0 * v0.pos.z + w1 * v1.pos.z + w2 * v2.pos.z;
             let normal = interpolate_normal(w0, w1, w2, v0, v1, v2);
-            let mut kd = kd_base;
+            let view_pos = interpolate_view_pos(w0, w1, w2, v0, v1, v2);
+            let vertex_color =
+                interpolate_color(w0, w1, w2, v0, v1, v2).clamp(Vec4::ZERO, Vec4::ONE);
+            let mut kd = kd_base * vertex_color.truncate();
+            let mut alpha = (alpha_base * vertex_color.w).clamp(0.0, 1.0);
             if let Some(t) = tex {
-                if let Some(uv) = interpolate_uv(w0, w1, w2, v0, v1, v2) {
-                    kd *= t.sample(uv);
+                if let Some(raw_uv) = interpolate_uv(w0, w1, w2, v0, v1, v2) {
+                    let uv = transform_uv(raw_uv, uv_transform);
+                    if let Some(fp) =
+                        uv_footprint(sample, area, s0, s1, s2, v0, v1, v2, raw_uv, uv_transform)
+                    {
+                        let rgba = t.sample_rgba_with_footprint(uv, fp);
+                        kd *= rgba.truncate();
+                        alpha *= rgba.w.clamp(0.0, 1.0);
+                    } else {
+                        let rgba = t.sample_rgba(uv);
+                        kd *= rgba.truncate();
+                        alpha *= rgba.w.clamp(0.0, 1.0);
+                    }
+                }
+            }
+            match alpha_mode {
+                AlphaMode::Opaque => {}
+                AlphaMode::Mask => {
+                    if alpha < alpha_cutoff {
+                        continue;
+                    }
+                }
+                AlphaMode::Blend => {
+                    if alpha <= 0.0 {
+                        continue;
+                    }
+                    kd *= alpha;
                 }
             }
 
-            let _ = surf
-                .gbuf
-                .try_write(x as usize, y as usize, depth, normal, kd, ks, ns, ke);
+            let _ = surf.gbuf.try_write(
+                x as usize, y as usize, depth, view_pos, normal, kd, ks, ns, ke,
+            );
         }
     }
 }
@@ -338,6 +508,9 @@ struct GBufferChunkMut<'a> {
     width: usize,
     y0: usize,
     depth: &'a mut [f32],
+    vx: &'a mut [f32],
+    vy: &'a mut [f32],
+    vz: &'a mut [f32],
     nx: &'a mut [f32],
     ny: &'a mut [f32],
     nz: &'a mut [f32],
@@ -362,12 +535,14 @@ impl<'a> GBufferChunkMut<'a> {
         x: usize,
         y: usize,
         depth: f32,
+        view_pos: Vec3,
         normal: Vec3,
         kd: Vec3,
         ks: Vec3,
         ns: f32,
         ke: Vec3,
     ) -> bool {
+        const DEPTH_TEST_EPS: f32 = 1e-6;
         if x >= self.width {
             return false;
         }
@@ -376,8 +551,11 @@ impl<'a> GBufferChunkMut<'a> {
             return false;
         }
         let i = (y - self.y0) * self.width + x;
-        if depth < self.depth[i] {
+        if depth <= self.depth[i] + DEPTH_TEST_EPS {
             self.depth[i] = depth;
+            self.vx[i] = view_pos.x;
+            self.vy[i] = view_pos.y;
+            self.vz[i] = view_pos.z;
             self.nx[i] = normal.x;
             self.ny[i] = normal.y;
             self.nz[i] = normal.z;
@@ -400,9 +578,14 @@ fn draw_tri_params_clamped_chunk(
     v1: Vertex,
     v2: Vertex,
     kd_base: Vec3,
+    alpha_base: f32,
+    alpha_mode: AlphaMode,
+    alpha_cutoff: f32,
+    double_sided: bool,
     ks: Vec3,
     ns: f32,
     ke: Vec3,
+    uv_transform: Mat3,
     tex: Option<&Texture>,
     clamp_min_x: i32,
     clamp_max_x: i32,
@@ -439,28 +622,68 @@ fn draw_tri_params_clamped_chunk(
     if area.abs() < 1e-8 {
         return;
     }
+    if !double_sided && area <= 0.0 {
+        return;
+    }
+    let area_sign = if area >= 0.0 { 1.0 } else { -1.0 };
 
     for y in min_y..=max_y {
         for x in min_x..=max_x {
             let sample = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
-            let w0 = edge(s1, s2, sample) / area;
-            let w1 = edge(s2, s0, sample) / area;
-            let w2 = edge(s0, s1, sample) / area;
-
-            if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
+            let e0 = edge(s1, s2, sample);
+            let e1 = edge(s2, s0, sample);
+            let e2 = edge(s0, s1, sample);
+            if !edge_is_inside(e0, s1, s2, area_sign)
+                || !edge_is_inside(e1, s2, s0, area_sign)
+                || !edge_is_inside(e2, s0, s1, area_sign)
+            {
                 continue;
             }
+            let w0 = e0 / area;
+            let w1 = e1 / area;
+            let w2 = e2 / area;
 
             let depth = w0 * v0.pos.z + w1 * v1.pos.z + w2 * v2.pos.z;
             let normal = interpolate_normal(w0, w1, w2, v0, v1, v2);
-            let mut kd = kd_base;
+            let view_pos = interpolate_view_pos(w0, w1, w2, v0, v1, v2);
+            let vertex_color =
+                interpolate_color(w0, w1, w2, v0, v1, v2).clamp(Vec4::ZERO, Vec4::ONE);
+            let mut kd = kd_base * vertex_color.truncate();
+            let mut alpha = (alpha_base * vertex_color.w).clamp(0.0, 1.0);
             if let Some(t) = tex {
-                if let Some(uv) = interpolate_uv(w0, w1, w2, v0, v1, v2) {
-                    kd *= t.sample(uv);
+                if let Some(raw_uv) = interpolate_uv(w0, w1, w2, v0, v1, v2) {
+                    let uv = transform_uv(raw_uv, uv_transform);
+                    if let Some(fp) =
+                        uv_footprint(sample, area, s0, s1, s2, v0, v1, v2, raw_uv, uv_transform)
+                    {
+                        let rgba = t.sample_rgba_with_footprint(uv, fp);
+                        kd *= rgba.truncate();
+                        alpha *= rgba.w.clamp(0.0, 1.0);
+                    } else {
+                        let rgba = t.sample_rgba(uv);
+                        kd *= rgba.truncate();
+                        alpha *= rgba.w.clamp(0.0, 1.0);
+                    }
+                }
+            }
+            match alpha_mode {
+                AlphaMode::Opaque => {}
+                AlphaMode::Mask => {
+                    if alpha < alpha_cutoff {
+                        continue;
+                    }
+                }
+                AlphaMode::Blend => {
+                    if alpha <= 0.0 {
+                        continue;
+                    }
+                    kd *= alpha;
                 }
             }
 
-            let _ = gbuf.try_write(x as usize, y as usize, depth, normal, kd, ks, ns, ke);
+            let _ = gbuf.try_write(
+                x as usize, y as usize, depth, view_pos, normal, kd, ks, ns, ke,
+            );
         }
     }
 }
@@ -484,6 +707,9 @@ fn render_tiles_parallel(
     let iter = gbuf
         .depth
         .par_chunks_mut(row_stride)
+        .zip(gbuf.vx.par_chunks_mut(row_stride))
+        .zip(gbuf.vy.par_chunks_mut(row_stride))
+        .zip(gbuf.vz.par_chunks_mut(row_stride))
         .zip(gbuf.nx.par_chunks_mut(row_stride))
         .zip(gbuf.ny.par_chunks_mut(row_stride))
         .zip(gbuf.nz.par_chunks_mut(row_stride))
@@ -493,7 +719,10 @@ fn render_tiles_parallel(
         .zip(gbuf.ke.par_chunks_mut(row_stride));
 
     iter.enumerate().for_each(
-        |(ty, (((((((depth_c, nx_c), ny_c), nz_c), kd_c), ks_c), ns_c), ke_c))| {
+        |(
+            ty,
+            ((((((((((depth_c, vx_c), vy_c), vz_c), nx_c), ny_c), nz_c), kd_c), ks_c), ns_c), ke_c),
+        )| {
             let y0 = ty * chunk_rows;
             if y0 >= height {
                 return;
@@ -503,6 +732,9 @@ fn render_tiles_parallel(
                 width,
                 y0,
                 depth: depth_c,
+                vx: vx_c,
+                vy: vy_c,
+                vz: vz_c,
                 nx: nx_c,
                 ny: ny_c,
                 nz: nz_c,
@@ -542,8 +774,25 @@ fn render_tiles_parallel(
                     let tri = tiled_tris[tile_items[i] as usize];
                     let tex = tri.map_kd.and_then(|h| scene.texture(h));
                     draw_tri_params_clamped_chunk(
-                        cfg, &mut chunk, tri.a, tri.b, tri.c, tri.kd, tri.ks, tri.ns, tri.ke, tex,
-                        tile_min_x, tile_max_x, tile_min_y, tile_max_y,
+                        cfg,
+                        &mut chunk,
+                        tri.a,
+                        tri.b,
+                        tri.c,
+                        tri.kd,
+                        tri.alpha,
+                        tri.alpha_mode,
+                        tri.alpha_cutoff,
+                        tri.double_sided,
+                        tri.ks,
+                        tri.ns,
+                        tri.ke,
+                        tri.uv_transform,
+                        tex,
+                        tile_min_x,
+                        tile_max_x,
+                        tile_min_y,
+                        tile_max_y,
                     );
                 }
             }
@@ -565,19 +814,25 @@ fn rasterize_tri_collect(
 ) {
     let mut v0 = Vertex {
         pos: (mv * tri.a.pos.extend(1.0)).truncate(),
+        view_pos: (mv * tri.a.pos.extend(1.0)).truncate(),
         nrm: (nm * tri.a.nrm.extend(0.0)).truncate(),
+        color: tri.a.color,
         uv: tri.a.uv,
         inv_w: 1.0,
     };
     let mut v1 = Vertex {
         pos: (mv * tri.b.pos.extend(1.0)).truncate(),
+        view_pos: (mv * tri.b.pos.extend(1.0)).truncate(),
         nrm: (nm * tri.b.nrm.extend(0.0)).truncate(),
+        color: tri.b.color,
         uv: tri.b.uv,
         inv_w: 1.0,
     };
     let mut v2 = Vertex {
         pos: (mv * tri.c.pos.extend(1.0)).truncate(),
+        view_pos: (mv * tri.c.pos.extend(1.0)).truncate(),
         nrm: (nm * tri.c.nrm.extend(0.0)).truncate(),
+        color: tri.c.color,
         uv: tri.c.uv,
         inv_w: 1.0,
     };
@@ -668,9 +923,14 @@ fn rasterize_tri_collect(
             b: bb,
             c: cc,
             kd: material.kd,
+            alpha: material.alpha,
+            alpha_mode: material.alpha_mode,
+            alpha_cutoff: material.alpha_cutoff,
+            double_sided: material.double_sided,
             ks: material.ks,
             ns: material.ns,
             ke: material.ke,
+            uv_transform: material.map_kd_uv_transform,
             map_kd: material.map_kd,
         });
     }
@@ -753,19 +1013,25 @@ fn rasterize_tiled(scene: &Scene, cam: &Camera, surf: &mut RasterSurface, scratc
                 let tri = Tri {
                     a: Vertex {
                         pos: mesh.positions[i0],
+                        view_pos: mesh.positions[i0],
                         nrm: n0,
+                        color: mesh.colors.get(i0).copied().unwrap_or(Vec4::ONE),
                         uv: uv0,
                         inv_w: 1.0,
                     },
                     b: Vertex {
                         pos: mesh.positions[i1],
+                        view_pos: mesh.positions[i1],
                         nrm: n1,
+                        color: mesh.colors.get(i1).copied().unwrap_or(Vec4::ONE),
                         uv: uv1,
                         inv_w: 1.0,
                     },
                     c: Vertex {
                         pos: mesh.positions[i2],
+                        view_pos: mesh.positions[i2],
                         nrm: n2,
+                        color: mesh.colors.get(i2).copied().unwrap_or(Vec4::ONE),
                         uv: uv2,
                         inv_w: 1.0,
                     },
@@ -942,9 +1208,14 @@ fn rasterize_tiled(scene: &Scene, cam: &Camera, surf: &mut RasterSurface, scratc
                         t.b,
                         t.c,
                         t.kd,
+                        t.alpha,
+                        t.alpha_mode,
+                        t.alpha_cutoff,
+                        t.double_sided,
                         t.ks,
                         t.ns,
                         t.ke,
+                        t.uv_transform,
                         tex,
                         clamp_min_x,
                         clamp_max_x,
@@ -970,19 +1241,25 @@ fn rasterize_tri(
 ) {
     let mut v0 = Vertex {
         pos: (mv * tri.a.pos.extend(1.0)).truncate(),
+        view_pos: (mv * tri.a.pos.extend(1.0)).truncate(),
         nrm: (nm * tri.a.nrm.extend(0.0)).truncate(),
+        color: tri.a.color,
         uv: tri.a.uv,
         inv_w: 1.0,
     };
     let mut v1 = Vertex {
         pos: (mv * tri.b.pos.extend(1.0)).truncate(),
+        view_pos: (mv * tri.b.pos.extend(1.0)).truncate(),
         nrm: (nm * tri.b.nrm.extend(0.0)).truncate(),
+        color: tri.b.color,
         uv: tri.b.uv,
         inv_w: 1.0,
     };
     let mut v2 = Vertex {
         pos: (mv * tri.c.pos.extend(1.0)).truncate(),
+        view_pos: (mv * tri.c.pos.extend(1.0)).truncate(),
         nrm: (nm * tri.c.nrm.extend(0.0)).truncate(),
+        color: tri.c.color,
         uv: tri.c.uv,
         inv_w: 1.0,
     };
@@ -1119,19 +1396,25 @@ fn rasterize(scene: &Scene, cam: &Camera, surf: &mut RasterSurface, scratch: &mu
             let tri = Tri {
                 a: Vertex {
                     pos: mesh.positions[i0],
+                    view_pos: mesh.positions[i0],
                     nrm: n0,
+                    color: mesh.colors.get(i0).copied().unwrap_or(Vec4::ONE),
                     uv: uv0,
                     inv_w: 1.0,
                 },
                 b: Vertex {
                     pos: mesh.positions[i1],
+                    view_pos: mesh.positions[i1],
                     nrm: n1,
+                    color: mesh.colors.get(i1).copied().unwrap_or(Vec4::ONE),
                     uv: uv1,
                     inv_w: 1.0,
                 },
                 c: Vertex {
                     pos: mesh.positions[i2],
+                    view_pos: mesh.positions[i2],
                     nrm: n2,
+                    color: mesh.colors.get(i2).copied().unwrap_or(Vec4::ONE),
                     uv: uv2,
                     inv_w: 1.0,
                 },
@@ -1159,7 +1442,11 @@ fn render_to_gbuffer_with_scratch(
     let cfg = RasterConfig {
         width: gbuf.width() as u32,
         height: gbuf.height() as u32,
-        camera_aspect: sanitize_camera_aspect(gbuf.width() as u32, gbuf.height() as u32, camera_aspect),
+        camera_aspect: sanitize_camera_aspect(
+            gbuf.width() as u32,
+            gbuf.height() as u32,
+            camera_aspect,
+        ),
     };
     gbuf.clear();
     scratch.begin_frame();
@@ -1177,7 +1464,11 @@ fn render_to_gbuffer_tiled_with_scratch(
     let cfg = RasterConfig {
         width: gbuf.width() as u32,
         height: gbuf.height() as u32,
-        camera_aspect: sanitize_camera_aspect(gbuf.width() as u32, gbuf.height() as u32, camera_aspect),
+        camera_aspect: sanitize_camera_aspect(
+            gbuf.width() as u32,
+            gbuf.height() as u32,
+            camera_aspect,
+        ),
     };
     gbuf.clear();
     scratch.begin_frame();
@@ -1207,11 +1498,7 @@ pub fn render_to_gbuffer(scene: &Scene, gbuf: &mut GBuffer) {
     render_to_gbuffer_with_camera_aspect(scene, gbuf, camera_aspect);
 }
 
-pub fn render_to_gbuffer_with_camera_aspect(
-    scene: &Scene,
-    gbuf: &mut GBuffer,
-    camera_aspect: f32,
-) {
+pub fn render_to_gbuffer_with_camera_aspect(scene: &Scene, gbuf: &mut GBuffer, camera_aspect: f32) {
     TL_SCRATCH.with(|s| {
         let mut scratch = s.borrow_mut();
         render_to_gbuffer_with_scratch(scene, gbuf, &mut scratch, camera_aspect);

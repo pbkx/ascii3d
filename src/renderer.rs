@@ -327,6 +327,7 @@ impl Renderer {
                     self.config.debug_view(),
                     self.config.shader(),
                     p.depth,
+                    p.view_pos,
                     p.normal,
                     p.kd,
                     p.ks,
@@ -377,6 +378,7 @@ impl Renderer {
                     self.config.debug_view(),
                     self.config.shader(),
                     p.depth,
+                    p.view_pos,
                     p.normal,
                     p.kd,
                     p.ks,
@@ -387,6 +389,7 @@ impl Renderer {
                     self.config.debug_view(),
                     self.config.shader(),
                     p.depth,
+                    p.view_pos,
                     p.normal,
                     p.kd,
                     p.ks,
@@ -549,6 +552,7 @@ impl Renderer {
                         self.config.debug_view(),
                         self.config.shader(),
                         p0.depth,
+                        p0.view_pos,
                         p0.normal,
                         p0.kd,
                         p0.ks,
@@ -559,6 +563,7 @@ impl Renderer {
                         self.config.debug_view(),
                         self.config.shader(),
                         p1.depth,
+                        p1.view_pos,
                         p1.normal,
                         p1.kd,
                         p1.ks,
@@ -573,6 +578,7 @@ impl Renderer {
                         self.config.debug_view(),
                         self.config.shader(),
                         p0.depth,
+                        p0.view_pos,
                         p0.normal,
                         p0.kd,
                         p0.ks,
@@ -586,6 +592,7 @@ impl Renderer {
                         self.config.debug_view(),
                         self.config.shader(),
                         p1.depth,
+                        p1.view_pos,
                         p1.normal,
                         p1.kd,
                         p1.ks,
@@ -777,6 +784,7 @@ impl Renderer {
                     self.config.debug_view(),
                     self.config.shader(),
                     p.depth,
+                    p.view_pos,
                     p.normal,
                     p.kd,
                     p.ks,
@@ -784,14 +792,7 @@ impl Renderer {
                     p.ke,
                 );
                 let rgb_u8 = Self::to_u8_rgb(rgb);
-                let _ = target.set_rgba(
-                    x,
-                    y,
-                    rgb_u8.r,
-                    rgb_u8.g,
-                    rgb_u8.b,
-                    255,
-                );
+                let _ = target.set_rgba(x, y, rgb_u8.r, rgb_u8.g, rgb_u8.b, 255);
             }
         }
     }
@@ -1185,7 +1186,7 @@ mod tests {
         let mut img = crate::targets::ImageTarget::new(w, h);
         renderer.render_image(&scene, &mut img);
 
-        const EXPECTED: u64 = 12_116_228_279_998_644_353;
+        const EXPECTED: u64 = 8_418_414_609_559_016_131;
         assert_eq!(img.hash64(), EXPECTED);
     }
 

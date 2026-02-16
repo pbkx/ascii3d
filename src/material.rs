@@ -1,6 +1,13 @@
-use glam::Vec3;
+use glam::{Mat3, Vec3};
 
 use crate::texture::TextureHandle;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AlphaMode {
+    Opaque,
+    Mask,
+    Blend,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Material {
@@ -10,8 +17,12 @@ pub struct Material {
     pub ns: f32,
     pub ke: Vec3,
     pub alpha: f32,
+    pub alpha_mode: AlphaMode,
+    pub alpha_cutoff: f32,
+    pub double_sided: bool,
     pub map_kd_path: Option<String>,
     pub map_kd: Option<TextureHandle>,
+    pub map_kd_uv_transform: Mat3,
 }
 
 impl Default for Material {
@@ -24,8 +35,12 @@ impl Default for Material {
             ns: 0.0,
             ke: Vec3::ZERO,
             alpha: 1.0,
+            alpha_mode: AlphaMode::Opaque,
+            alpha_cutoff: 0.5,
+            double_sided: true,
             map_kd_path: None,
             map_kd: None,
+            map_kd_uv_transform: Mat3::IDENTITY,
         }
     }
 }
