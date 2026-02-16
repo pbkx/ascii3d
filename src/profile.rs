@@ -24,7 +24,7 @@ impl RenderStats {
         }
 
         format!(
-            "{}x{} tri={} tiled={} total={:.2}ms resize={:.2}ms clear={:.2}ms gbuf={:.2}ms raster={:.2}ms map={:.2}ms",
+            "raster={}x{} tri={} tiled={} total={:.2}ms resize={:.2}ms clear={:.2}ms gbuf={:.2}ms raster={:.2}ms map={:.2}ms",
             self.width,
             self.height,
             self.triangles_submitted,

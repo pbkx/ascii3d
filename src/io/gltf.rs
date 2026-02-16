@@ -2009,7 +2009,7 @@ mod tests {
         let mut img = crate::targets::ImageTarget::new(32, 32);
         renderer.render_image(&scene, &mut img);
 
-        const EXPECTED: u64 = 17_340_975_637_531_158_088;
+        const EXPECTED: u64 = 18_236_220_368_152_172_020;
         assert_eq!(img.hash64(), EXPECTED);
     }
 

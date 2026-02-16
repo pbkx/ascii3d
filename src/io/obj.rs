@@ -290,11 +290,161 @@ fn triangulate(idxs: &[u32], mat: u32, mesh: &mut Mesh, tri_materials: &mut Vec<
     if idxs.len() < 3 {
         return;
     }
+    if idxs.len() == 3 {
+        mesh.indices.push([idxs[0], idxs[1], idxs[2]]);
+        tri_materials.push(mat);
+        return;
+    }
+
+    if triangulate_ear_clip(idxs, mat, mesh, tri_materials) {
+        return;
+    }
+
     let base = idxs[0];
     for i in 1..(idxs.len() - 1) {
         mesh.indices.push([base, idxs[i], idxs[i + 1]]);
         tri_materials.push(mat);
     }
+}
+
+fn triangulate_ear_clip(idxs: &[u32], mat: u32, mesh: &mut Mesh, tri_materials: &mut Vec<u32>) -> bool {
+    const EPS: f32 = 1e-8;
+    let mut poly3: Vec<Vec3> = Vec::with_capacity(idxs.len());
+    for &idx in idxs {
+        let Some(p) = mesh.positions.get(idx as usize).copied() else {
+            return false;
+        };
+        poly3.push(p);
+    }
+
+    let normal = polygon_normal_newell(&poly3);
+    if normal.length_squared() <= EPS {
+        return false;
+    }
+    let an = normal.abs();
+    let drop_axis = if an.x >= an.y && an.x >= an.z {
+        0
+    } else if an.y >= an.z {
+        1
+    } else {
+        2
+    };
+
+    let poly2: Vec<Vec2> = poly3
+        .iter()
+        .copied()
+        .map(|p| project_to_2d(p, drop_axis))
+        .collect();
+    let signed_area = polygon_signed_area_2d(&poly2);
+    if signed_area.abs() <= EPS {
+        return false;
+    }
+    let winding = if signed_area >= 0.0 { 1.0 } else { -1.0 };
+
+    let mut rem: Vec<usize> = (0..idxs.len()).collect();
+    let mut guard = 0usize;
+    let guard_max = idxs.len().saturating_mul(idxs.len()).saturating_add(1);
+    while rem.len() > 3 {
+        guard = guard.saturating_add(1);
+        if guard > guard_max {
+            return false;
+        }
+
+        let len = rem.len();
+        let mut ear_found = false;
+        for i in 0..len {
+            let ip = rem[(i + len - 1) % len];
+            let ic = rem[i];
+            let inx = rem[(i + 1) % len];
+
+            let a = poly2[ip];
+            let b = poly2[ic];
+            let c = poly2[inx];
+            let turn = cross2(b - a, c - a);
+            if turn * winding <= EPS {
+                continue;
+            }
+
+            let mut contains = false;
+            for &j in rem.iter() {
+                if j == ip || j == ic || j == inx {
+                    continue;
+                }
+                if point_in_triangle_2d(poly2[j], a, b, c) {
+                    contains = true;
+                    break;
+                }
+            }
+            if contains {
+                continue;
+            }
+
+            mesh.indices.push([idxs[ip], idxs[ic], idxs[inx]]);
+            tri_materials.push(mat);
+            rem.remove(i);
+            ear_found = true;
+            break;
+        }
+
+        if !ear_found {
+            return false;
+        }
+    }
+
+    if rem.len() == 3 {
+        mesh.indices.push([idxs[rem[0]], idxs[rem[1]], idxs[rem[2]]]);
+        tri_materials.push(mat);
+        true
+    } else {
+        false
+    }
+}
+
+fn polygon_normal_newell(poly: &[Vec3]) -> Vec3 {
+    let mut n = Vec3::ZERO;
+    for i in 0..poly.len() {
+        let p = poly[i];
+        let q = poly[(i + 1) % poly.len()];
+        n.x += (p.y - q.y) * (p.z + q.z);
+        n.y += (p.z - q.z) * (p.x + q.x);
+        n.z += (p.x - q.x) * (p.y + q.y);
+    }
+    n
+}
+
+fn project_to_2d(p: Vec3, drop_axis: usize) -> Vec2 {
+    match drop_axis {
+        0 => Vec2::new(p.y, p.z),
+        1 => Vec2::new(p.x, p.z),
+        _ => Vec2::new(p.x, p.y),
+    }
+}
+
+fn polygon_signed_area_2d(poly: &[Vec2]) -> f32 {
+    if poly.len() < 3 {
+        return 0.0;
+    }
+    let mut s = 0.0;
+    for i in 0..poly.len() {
+        let p = poly[i];
+        let q = poly[(i + 1) % poly.len()];
+        s += p.x * q.y - q.x * p.y;
+    }
+    0.5 * s
+}
+
+fn cross2(a: Vec2, b: Vec2) -> f32 {
+    a.x * b.y - a.y * b.x
+}
+
+fn point_in_triangle_2d(p: Vec2, a: Vec2, b: Vec2, c: Vec2) -> bool {
+    const EPS: f32 = 1e-8;
+    let c0 = cross2(b - a, p - a);
+    let c1 = cross2(c - b, p - b);
+    let c2 = cross2(a - c, p - c);
+    let has_neg = c0 < -EPS || c1 < -EPS || c2 < -EPS;
+    let has_pos = c0 > EPS || c1 > EPS || c2 > EPS;
+    !(has_neg && has_pos)
 }
 
 fn read_to_string(path: &Path) -> Result<String, ObjError> {
@@ -441,5 +591,34 @@ f 1/1 2/2 3/3
         assert_eq!(loaded.mesh.positions.len(), 3);
         assert_eq!(loaded.mesh.uvs.len(), 3);
         loaded.mesh.assert_invariants();
+    }
+
+    #[test]
+    fn obj_concave_face_triangulates_without_overlap() {
+        let obj = r"
+v 0 0 0
+v 2 0 0
+v 2 2 0
+v 1 1 0
+v 0 2 0
+f 1 2 3 4 5
+";
+        let loaded = load_obj_with_mtl_str(obj, None).unwrap();
+        assert_eq!(loaded.mesh.indices.len(), 3);
+        loaded.mesh.assert_invariants();
+
+        let tri_area_sum: f32 = loaded
+            .mesh
+            .indices
+            .iter()
+            .map(|tri| {
+                let a = loaded.mesh.positions[tri[0] as usize];
+                let b = loaded.mesh.positions[tri[1] as usize];
+                let c = loaded.mesh.positions[tri[2] as usize];
+                0.5 * (b - a).cross(c - a).length()
+            })
+            .sum();
+
+        assert!((tri_area_sum - 3.0).abs() < 1e-5);
     }
 }

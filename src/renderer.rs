@@ -217,9 +217,6 @@ impl Renderer {
         }
         stats.target_resize = resize_t0.elapsed();
 
-        stats.width = target.width();
-        stats.height = target.height();
-
         let clear_t0 = Instant::now();
         target.clear(Cell::new(' ', Rgb8::BLACK, Rgb8::BLACK, f32::INFINITY));
         stats.target_clear = clear_t0.elapsed();
@@ -231,6 +228,8 @@ impl Renderer {
             }
             _ => GBuffer::new(self.config.width(), self.config.height()),
         };
+        stats.width = gbuf.width();
+        stats.height = gbuf.height();
         stats.gbuffer_alloc = gbuf_t0.elapsed();
 
         let raster_t0 = Instant::now();
@@ -278,8 +277,27 @@ impl Renderer {
         0.2126 * rgb.x + 0.7152 * rgb.y + 0.0722 * rgb.z
     }
 
+    fn linear_to_srgb(rgb: Vec3) -> Vec3 {
+        fn linear_to_srgb_channel(v: f32) -> f32 {
+            let v = v.clamp(0.0, 1.0);
+            if v <= 0.003_130_8 {
+                12.92 * v
+            } else {
+                1.055 * v.powf(1.0 / 2.4) - 0.055
+            }
+        }
+
+        Vec3::new(
+            linear_to_srgb_channel(rgb.x),
+            linear_to_srgb_channel(rgb.y),
+            linear_to_srgb_channel(rgb.z),
+        )
+    }
+
     fn to_u8_rgb(rgb: Vec3) -> Rgb8 {
-        let rgb_u8 = (rgb.clamp(Vec3::ZERO, Vec3::ONE) * 255.0 + Vec3::splat(0.5)).as_uvec3();
+        let rgb_u8 = (Self::linear_to_srgb(rgb.clamp(Vec3::ZERO, Vec3::ONE)) * 255.0
+            + Vec3::splat(0.5))
+        .as_uvec3();
         Rgb8::new(
             u8::try_from(rgb_u8.x).unwrap_or(255),
             u8::try_from(rgb_u8.y).unwrap_or(255),
@@ -369,8 +387,6 @@ impl Renderer {
                     p.ns,
                     p.ke,
                 );
-                let rgb_u8 =
-                    (rgb.clamp(Vec3::ZERO, Vec3::ONE) * 255.0 + Vec3::splat(0.5)).as_uvec3();
                 let mut cell = match self.config.glyph_mode() {
                     GlyphMode::AsciiRamp(ramp) => {
                         let bytes = ramp.bytes();
@@ -414,11 +430,7 @@ impl Renderer {
                         .glyph_mode()
                         .cell_from_scalar(shade_scalar, p.depth),
                 };
-                cell.fg = Rgb8::new(
-                    u8::try_from(rgb_u8.x).unwrap_or(255),
-                    u8::try_from(rgb_u8.y).unwrap_or(255),
-                    u8::try_from(rgb_u8.z).unwrap_or(255),
-                );
+                cell.fg = Self::to_u8_rgb(rgb);
                 cell.bg = Rgb8::BLACK;
                 let _ = target.set(x, y, cell);
             }
@@ -506,11 +518,6 @@ impl Renderer {
             return;
         }
 
-        fn to_u8_rgb(rgb: Vec3) -> Rgb8 {
-            let rgb_u8 = (rgb.clamp(Vec3::ZERO, Vec3::ONE) * 255.0 + Vec3::splat(0.5)).as_uvec3();
-            Rgb8::new(rgb_u8.x as u8, rgb_u8.y as u8, rgb_u8.z as u8)
-        }
-
         for y in 0..target.height() {
             let y0 = y.saturating_mul(2);
             let y1 = y0 + 1;
@@ -532,7 +539,7 @@ impl Renderer {
                 if p0_ok && p1_ok {
                     let p0 = p0.unwrap();
                     let p1 = p1.unwrap();
-                    let rgb0 = to_u8_rgb(rgb_for_view(
+                    let rgb0 = Self::to_u8_rgb(rgb_for_view(
                         self.config.debug_view(),
                         self.config.shader(),
                         p0.depth,
@@ -542,7 +549,7 @@ impl Renderer {
                         p0.ns,
                         p0.ke,
                     ));
-                    let rgb1 = to_u8_rgb(rgb_for_view(
+                    let rgb1 = Self::to_u8_rgb(rgb_for_view(
                         self.config.debug_view(),
                         self.config.shader(),
                         p1.depth,
@@ -556,7 +563,7 @@ impl Renderer {
                     let _ = target.set(x, y, Cell::new('▀', rgb0, rgb1, depth));
                 } else if p0_ok {
                     let p0 = p0.unwrap();
-                    let rgb0 = to_u8_rgb(rgb_for_view(
+                    let rgb0 = Self::to_u8_rgb(rgb_for_view(
                         self.config.debug_view(),
                         self.config.shader(),
                         p0.depth,
@@ -569,7 +576,7 @@ impl Renderer {
                     let _ = target.set(x, y, Cell::new('▀', rgb0, Rgb8::BLACK, p0.depth));
                 } else if p1_ok {
                     let p1 = p1.unwrap();
-                    let rgb1 = to_u8_rgb(rgb_for_view(
+                    let rgb1 = Self::to_u8_rgb(rgb_for_view(
                         self.config.debug_view(),
                         self.config.shader(),
                         p1.depth,
@@ -768,14 +775,13 @@ impl Renderer {
                     p.ns,
                     p.ke,
                 );
-                let rgb_u8 =
-                    (rgb.clamp(Vec3::ZERO, Vec3::ONE) * 255.0 + Vec3::splat(0.5)).as_uvec3();
+                let rgb_u8 = Self::to_u8_rgb(rgb);
                 let _ = target.set_rgba(
                     x,
                     y,
-                    u8::try_from(rgb_u8.x).unwrap_or(255),
-                    u8::try_from(rgb_u8.y).unwrap_or(255),
-                    u8::try_from(rgb_u8.z).unwrap_or(255),
+                    rgb_u8.r,
+                    rgb_u8.g,
+                    rgb_u8.b,
                     255,
                 );
             }
@@ -848,6 +854,20 @@ mod tests {
             }
         }
         assert!(saw_block);
+    }
+
+    #[test]
+    fn half_block_stats_report_gbuffer_resolution() {
+        let scene = Scene::new();
+        let renderer = Renderer::new(
+            RendererConfig::default()
+                .with_size(64, 32)
+                .with_glyph_mode(GlyphMode::HalfBlock),
+        );
+        let mut target = crate::targets::BufferTarget::new(64, 32);
+        let stats = renderer.render_with_stats(&scene, &mut target);
+        assert_eq!(stats.width, 64);
+        assert_eq!(stats.height, 64);
     }
 
     #[test]
@@ -1157,7 +1177,7 @@ mod tests {
         let mut img = crate::targets::ImageTarget::new(w, h);
         renderer.render_image(&scene, &mut img);
 
-        const EXPECTED: u64 = 0xa325_50a8_c82a_5025;
+        const EXPECTED: u64 = 12_116_228_279_998_644_353;
         assert_eq!(img.hash64(), EXPECTED);
     }
 

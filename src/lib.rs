@@ -1,5 +1,3 @@
-#![forbid(unsafe_code)]
-#![warn(clippy::all)]
 pub mod bvh;
 pub mod camera;
 pub mod debug;

@@ -29,6 +29,7 @@ struct Tri {
 
 const TILE_SIZE: i32 = 16;
 const W_CLIP_EPS: f32 = 1e-6;
+const FRUSTUM_CLIP_PLANE_COUNT: usize = 7;
 
 #[derive(Copy, Clone, Debug)]
 struct TiledTri {
@@ -74,8 +75,8 @@ pub(crate) struct Scratch {
 impl Scratch {
     fn new() -> Self {
         Self {
-            clip_a: Vec::with_capacity(8),
-            clip_b: Vec::with_capacity(8),
+            clip_a: Vec::with_capacity(16),
+            clip_b: Vec::with_capacity(16),
             tiled_tris: Vec::new(),
             tile_counts: Vec::new(),
             tile_starts: Vec::new(),
@@ -108,6 +109,40 @@ fn project_to_screen(pos: Vec3, width: u32, height: u32) -> Vec2 {
 
 fn edge(a: Vec2, b: Vec2, c: Vec2) -> f32 {
     (c.x - a.x) * (b.y - a.y) - (c.y - a.y) * (b.x - a.x)
+}
+
+fn perspective_denom(w0: f32, w1: f32, w2: f32, v0: Vertex, v1: Vertex, v2: Vertex) -> f32 {
+    w0 * v0.inv_w + w1 * v1.inv_w + w2 * v2.inv_w
+}
+
+fn interpolate_normal(w0: f32, w1: f32, w2: f32, v0: Vertex, v1: Vertex, v2: Vertex) -> Vec3 {
+    let denom = perspective_denom(w0, w1, w2, v0, v1, v2);
+    if denom.abs() > 1e-8 {
+        ((v0.nrm * (w0 * v0.inv_w) + v1.nrm * (w1 * v1.inv_w) + v2.nrm * (w2 * v2.inv_w))
+            / denom)
+            .normalize_or_zero()
+    } else {
+        (w0 * v0.nrm + w1 * v1.nrm + w2 * v2.nrm).normalize_or_zero()
+    }
+}
+
+fn interpolate_uv(
+    w0: f32,
+    w1: f32,
+    w2: f32,
+    v0: Vertex,
+    v1: Vertex,
+    v2: Vertex,
+) -> Option<Vec2> {
+    let denom = perspective_denom(w0, w1, w2, v0, v1, v2);
+    if denom.abs() > 1e-8 {
+        Some(
+            (v0.uv * (w0 * v0.inv_w) + v1.uv * (w1 * v1.inv_w) + v2.uv * (w2 * v2.inv_w))
+                / denom,
+        )
+    } else {
+        None
+    }
 }
 
 fn push_checked(out: &mut Vec<ClipVert>, grow_events: &mut usize, v: ClipVert) {
@@ -145,6 +180,18 @@ fn clip_edge(
         },
         pos_clip,
     )
+}
+
+fn clip_plane_distance(plane: usize, p: Vec4) -> f32 {
+    match plane {
+        0 => p.z + p.w,
+        1 => -p.z + p.w,
+        2 => p.x + p.w,
+        3 => -p.x + p.w,
+        4 => p.y + p.w,
+        5 => -p.y + p.w,
+        _ => p.w - W_CLIP_EPS,
+    }
 }
 
 fn draw_tri(
@@ -189,16 +236,11 @@ fn draw_tri(
             }
 
             let depth = w0 * v0.pos.z + w1 * v1.pos.z + w2 * v2.pos.z;
-            let normal = (w0 * v0.nrm + w1 * v1.nrm + w2 * v2.nrm).normalize_or_zero();
+            let normal = interpolate_normal(w0, w1, w2, v0, v1, v2);
             let mut kd = material.kd;
             if let Some(t) = tex {
-                let denom = w0 * v0.inv_w + w1 * v1.inv_w + w2 * v2.inv_w;
-                if denom.abs() > 1e-8 {
-                    let uv = (v0.uv * (w0 * v0.inv_w)
-                        + v1.uv * (w1 * v1.inv_w)
-                        + v2.uv * (w2 * v2.inv_w))
-                        / denom;
-                    kd = kd * t.sample_nearest(uv);
+                if let Some(uv) = interpolate_uv(w0, w1, w2, v0, v1, v2) {
+                    kd *= t.sample_nearest(uv);
                 }
             }
 
@@ -275,16 +317,11 @@ fn draw_tri_params_clamped(
             }
 
             let depth = w0 * v0.pos.z + w1 * v1.pos.z + w2 * v2.pos.z;
-            let normal = (w0 * v0.nrm + w1 * v1.nrm + w2 * v2.nrm).normalize_or_zero();
+            let normal = interpolate_normal(w0, w1, w2, v0, v1, v2);
             let mut kd = kd_base;
             if let Some(t) = tex {
-                let denom = w0 * v0.inv_w + w1 * v1.inv_w + w2 * v2.inv_w;
-                if denom.abs() > 1e-8 {
-                    let uv = (v0.uv * (w0 * v0.inv_w)
-                        + v1.uv * (w1 * v1.inv_w)
-                        + v2.uv * (w2 * v2.inv_w))
-                        / denom;
-                    kd = kd * t.sample_nearest(uv);
+                if let Some(uv) = interpolate_uv(w0, w1, w2, v0, v1, v2) {
+                    kd *= t.sample_nearest(uv);
                 }
             }
 
@@ -414,16 +451,11 @@ fn draw_tri_params_clamped_chunk(
             }
 
             let depth = w0 * v0.pos.z + w1 * v1.pos.z + w2 * v2.pos.z;
-            let normal = (w0 * v0.nrm + w1 * v1.nrm + w2 * v2.nrm).normalize_or_zero();
+            let normal = interpolate_normal(w0, w1, w2, v0, v1, v2);
             let mut kd = kd_base;
             if let Some(t) = tex {
-                let denom = w0 * v0.inv_w + w1 * v1.inv_w + w2 * v2.inv_w;
-                if denom.abs() > 1e-8 {
-                    let uv = (v0.uv * (w0 * v0.inv_w)
-                        + v1.uv * (w1 * v1.inv_w)
-                        + v2.uv * (w2 * v2.inv_w))
-                        / denom;
-                    kd = kd * t.sample_nearest(uv);
+                if let Some(uv) = interpolate_uv(w0, w1, w2, v0, v1, v2) {
+                    kd *= t.sample_nearest(uv);
                 }
             }
 
@@ -564,7 +596,7 @@ fn rasterize_tri_collect(
     clip_a.push((v2, v2c));
 
     let mut in_is_a = true;
-    for plane in 0..3 {
+    for plane in 0..FRUSTUM_CLIP_PLANE_COUNT {
         let (in_buf, out_buf): (&Vec<ClipVert>, &mut Vec<ClipVert>) = if in_is_a {
             (&*clip_a, clip_b)
         } else {
@@ -582,20 +614,8 @@ fn rasterize_tri_collect(
             let (va, pa) = in_buf[i];
             let (vb, pb) = in_buf[(i + 1) % n];
 
-            let da = if plane == 0 {
-                pa.z + pa.w
-            } else if plane == 1 {
-                -pa.z + pa.w
-            } else {
-                pa.w - W_CLIP_EPS
-            };
-            let db = if plane == 0 {
-                pb.z + pb.w
-            } else if plane == 1 {
-                -pb.z + pb.w
-            } else {
-                pb.w - W_CLIP_EPS
-            };
+            let da = clip_plane_distance(plane, pa);
+            let db = clip_plane_distance(plane, pb);
 
             let ina = da >= 0.0;
             let inb = db >= 0.0;
@@ -981,7 +1001,7 @@ fn rasterize_tri(
     scratch.clip_a.push((v2, v2c));
 
     let mut in_is_a = true;
-    for plane in 0..3 {
+    for plane in 0..FRUSTUM_CLIP_PLANE_COUNT {
         let (in_buf, out_buf) = if in_is_a {
             (&scratch.clip_a, &mut scratch.clip_b)
         } else {
@@ -999,20 +1019,8 @@ fn rasterize_tri(
             let (va, pa) = in_buf[i];
             let (vb, pb) = in_buf[(i + 1) % n];
 
-            let da = if plane == 0 {
-                pa.z + pa.w
-            } else if plane == 1 {
-                -pa.z + pa.w
-            } else {
-                pa.w - W_CLIP_EPS
-            };
-            let db = if plane == 0 {
-                pb.z + pb.w
-            } else if plane == 1 {
-                -pb.z + pb.w
-            } else {
-                pb.w - W_CLIP_EPS
-            };
+            let da = clip_plane_distance(plane, pa);
+            let db = clip_plane_distance(plane, pb);
 
             let ina = da >= 0.0;
             let inb = db >= 0.0;

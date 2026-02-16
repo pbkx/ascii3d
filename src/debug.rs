@@ -36,6 +36,10 @@ fn luma(rgb: Vec3) -> f32 {
     (0.2126 * rgb.x + 0.7152 * rgb.y + 0.0722 * rgb.z).clamp(0.0, 1.0)
 }
 
+fn ndc_depth_to_unit(depth: f32) -> f32 {
+    (depth * 0.5 + 0.5).clamp(0.0, 1.0)
+}
+
 pub fn scalar_for_view(
     view: DebugView,
     shader: &BuiltinShader,
@@ -48,7 +52,7 @@ pub fn scalar_for_view(
 ) -> f32 {
     match view {
         DebugView::Final => shader.shade_scalar(depth, normal, kd, ks, ns, ke),
-        DebugView::Depth => depth,
+        DebugView::Depth => ndc_depth_to_unit(depth),
         DebugView::Normals => (0.5 + 0.5 * normal.z).clamp(0.0, 1.0),
         DebugView::Albedo => luma(kd),
     }
@@ -66,8 +70,36 @@ pub fn rgb_for_view(
 ) -> Vec3 {
     match view {
         DebugView::Final => shader.shade_rgb(depth, normal, kd, ks, ns, ke),
-        DebugView::Depth => Vec3::splat(depth),
+        DebugView::Depth => Vec3::splat(ndc_depth_to_unit(depth)),
         DebugView::Normals => (normal + Vec3::ONE) * 0.5,
         DebugView::Albedo => kd,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shader::{BuiltinShader, ShaderId};
+
+    #[test]
+    fn depth_view_remaps_ndc_to_unit() {
+        let shader = BuiltinShader::from_id(ShaderId::Unlit);
+        let n = Vec3::Z;
+        let kd = Vec3::ONE;
+        let ks = Vec3::ZERO;
+        let ns = 0.0;
+        let ke = Vec3::ZERO;
+
+        let s_near = scalar_for_view(DebugView::Depth, &shader, -1.0, n, kd, ks, ns, ke);
+        let s_mid = scalar_for_view(DebugView::Depth, &shader, 0.0, n, kd, ks, ns, ke);
+        let s_far = scalar_for_view(DebugView::Depth, &shader, 1.0, n, kd, ks, ns, ke);
+        assert!((s_near - 0.0).abs() < 1e-6);
+        assert!((s_mid - 0.5).abs() < 1e-6);
+        assert!((s_far - 1.0).abs() < 1e-6);
+
+        let r = rgb_for_view(DebugView::Depth, &shader, 0.0, n, kd, ks, ns, ke);
+        assert!((r.x - 0.5).abs() < 1e-6);
+        assert!((r.y - 0.5).abs() < 1e-6);
+        assert!((r.z - 0.5).abs() < 1e-6);
     }
 }
