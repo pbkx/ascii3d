@@ -47,6 +47,7 @@ struct TiledTri {
 struct RasterConfig {
     width: u32,
     height: u32,
+    camera_aspect: f32,
 }
 
 struct RasterSurface<'a> {
@@ -240,7 +241,7 @@ fn draw_tri(
             let mut kd = material.kd;
             if let Some(t) = tex {
                 if let Some(uv) = interpolate_uv(w0, w1, w2, v0, v1, v2) {
-                    kd *= t.sample_nearest(uv);
+                    kd *= t.sample(uv);
                 }
             }
 
@@ -321,7 +322,7 @@ fn draw_tri_params_clamped(
             let mut kd = kd_base;
             if let Some(t) = tex {
                 if let Some(uv) = interpolate_uv(w0, w1, w2, v0, v1, v2) {
-                    kd *= t.sample_nearest(uv);
+                    kd *= t.sample(uv);
                 }
             }
 
@@ -455,7 +456,7 @@ fn draw_tri_params_clamped_chunk(
             let mut kd = kd_base;
             if let Some(t) = tex {
                 if let Some(uv) = interpolate_uv(w0, w1, w2, v0, v1, v2) {
-                    kd *= t.sample_nearest(uv);
+                    kd *= t.sample(uv);
                 }
             }
 
@@ -725,7 +726,7 @@ fn rasterize_tiled(scene: &Scene, cam: &Camera, surf: &mut RasterSurface, scratc
 
         for (mesh, material, transform) in scene.iter_objects() {
             let mv = cam.view_matrix() * transform.to_mat4();
-            let aspect = surf.cfg.width as f32 / (surf.cfg.height.max(1) as f32);
+            let aspect = surf.cfg.camera_aspect;
             let mvp = cam.projection_matrix(aspect) * mv;
             let nm = mv.inverse().transpose();
 
@@ -1089,7 +1090,7 @@ fn rasterize(scene: &Scene, cam: &Camera, surf: &mut RasterSurface, scratch: &mu
     }
     for (mesh, material, transform) in scene.iter_objects() {
         let mv = cam.view_matrix() * transform.to_mat4();
-        let aspect = surf.cfg.width as f32 / (surf.cfg.height.max(1) as f32);
+        let aspect = surf.cfg.camera_aspect;
         let mvp = cam.projection_matrix(aspect) * mv;
         let nm = mv.inverse().transpose();
 
@@ -1141,10 +1142,24 @@ fn rasterize(scene: &Scene, cam: &Camera, surf: &mut RasterSurface, scratch: &mu
     }
 }
 
-fn render_to_gbuffer_with_scratch(scene: &Scene, gbuf: &mut GBuffer, scratch: &mut Scratch) {
+fn sanitize_camera_aspect(width: u32, height: u32, camera_aspect: f32) -> f32 {
+    if camera_aspect.is_finite() && camera_aspect > 0.0 {
+        camera_aspect
+    } else {
+        width as f32 / (height.max(1) as f32)
+    }
+}
+
+fn render_to_gbuffer_with_scratch(
+    scene: &Scene,
+    gbuf: &mut GBuffer,
+    scratch: &mut Scratch,
+    camera_aspect: f32,
+) {
     let cfg = RasterConfig {
         width: gbuf.width() as u32,
         height: gbuf.height() as u32,
+        camera_aspect: sanitize_camera_aspect(gbuf.width() as u32, gbuf.height() as u32, camera_aspect),
     };
     gbuf.clear();
     scratch.begin_frame();
@@ -1153,10 +1168,16 @@ fn render_to_gbuffer_with_scratch(scene: &Scene, gbuf: &mut GBuffer, scratch: &m
     scratch.finish_frame();
 }
 
-fn render_to_gbuffer_tiled_with_scratch(scene: &Scene, gbuf: &mut GBuffer, scratch: &mut Scratch) {
+fn render_to_gbuffer_tiled_with_scratch(
+    scene: &Scene,
+    gbuf: &mut GBuffer,
+    scratch: &mut Scratch,
+    camera_aspect: f32,
+) {
     let cfg = RasterConfig {
         width: gbuf.width() as u32,
         height: gbuf.height() as u32,
+        camera_aspect: sanitize_camera_aspect(gbuf.width() as u32, gbuf.height() as u32, camera_aspect),
     };
     gbuf.clear();
     scratch.begin_frame();
@@ -1166,16 +1187,34 @@ fn render_to_gbuffer_tiled_with_scratch(scene: &Scene, gbuf: &mut GBuffer, scrat
 }
 
 pub fn render_to_gbuffer_tiled(scene: &Scene, gbuf: &mut GBuffer) {
+    let camera_aspect = gbuf.width() as f32 / (gbuf.height().max(1) as f32);
+    render_to_gbuffer_tiled_with_camera_aspect(scene, gbuf, camera_aspect);
+}
+
+pub fn render_to_gbuffer_tiled_with_camera_aspect(
+    scene: &Scene,
+    gbuf: &mut GBuffer,
+    camera_aspect: f32,
+) {
     TL_SCRATCH.with(|s| {
         let mut scratch = s.borrow_mut();
-        render_to_gbuffer_tiled_with_scratch(scene, gbuf, &mut scratch);
+        render_to_gbuffer_tiled_with_scratch(scene, gbuf, &mut scratch, camera_aspect);
     });
 }
 
 pub fn render_to_gbuffer(scene: &Scene, gbuf: &mut GBuffer) {
+    let camera_aspect = gbuf.width() as f32 / (gbuf.height().max(1) as f32);
+    render_to_gbuffer_with_camera_aspect(scene, gbuf, camera_aspect);
+}
+
+pub fn render_to_gbuffer_with_camera_aspect(
+    scene: &Scene,
+    gbuf: &mut GBuffer,
+    camera_aspect: f32,
+) {
     TL_SCRATCH.with(|s| {
         let mut scratch = s.borrow_mut();
-        render_to_gbuffer_with_scratch(scene, gbuf, &mut scratch);
+        render_to_gbuffer_with_scratch(scene, gbuf, &mut scratch, camera_aspect);
     });
 }
 
@@ -1187,7 +1226,31 @@ pub(crate) fn scratch_grow_events_last_frame() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{GBuffer, Material, Mesh, Scene, Transform};
+    use crate::{Camera, GBuffer, Material, Mesh, Projection, Scene, Transform};
+
+    fn finite_x_span(gbuf: &GBuffer) -> Option<(usize, usize)> {
+        let mut min_x = usize::MAX;
+        let mut max_x = 0usize;
+        let mut any = false;
+        for y in 0..gbuf.height() {
+            for x in 0..gbuf.width() {
+                let Some(p) = gbuf.at(x, y) else {
+                    continue;
+                };
+                if !p.depth.is_finite() {
+                    continue;
+                }
+                any = true;
+                min_x = min_x.min(x);
+                max_x = max_x.max(x);
+            }
+        }
+        if any {
+            Some((min_x, max_x))
+        } else {
+            None
+        }
+    }
 
     #[test]
     fn pr21_raster_clip_scratch_does_not_grow() {
@@ -1199,5 +1262,30 @@ mod tests {
         render_to_gbuffer(&scene, &mut gbuf);
 
         assert_eq!(scratch_grow_events_last_frame(), 0);
+    }
+
+    #[test]
+    fn camera_aspect_override_matches_display_framing() {
+        let mut scene = Scene::new();
+        scene.camera = Camera::new(
+            Transform::IDENTITY,
+            Projection::Orthographic {
+                half_height: 1.0,
+                near: -10.0,
+                far: 10.0,
+            },
+        );
+        scene.add_object(Mesh::unit_cube(), Transform::IDENTITY, Material::default());
+
+        let mut gbuf_display = GBuffer::new(64, 32);
+        render_to_gbuffer(&scene, &mut gbuf_display);
+        let span_display = finite_x_span(&gbuf_display).unwrap();
+
+        let mut gbuf_halfblock_raster = GBuffer::new(64, 64);
+        render_to_gbuffer_with_camera_aspect(&scene, &mut gbuf_halfblock_raster, 64.0 / 32.0);
+        let span_override = finite_x_span(&gbuf_halfblock_raster).unwrap();
+
+        assert!((span_display.0 as i32 - span_override.0 as i32).abs() <= 1);
+        assert!((span_display.1 as i32 - span_override.1 as i32).abs() <= 1);
     }
 }

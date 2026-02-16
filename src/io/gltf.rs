@@ -1,6 +1,6 @@
-use crate::texture::{Texture, TextureHandle};
+use crate::texture::{Texture, TextureFilter, TextureHandle, TextureSampler, TextureWrapMode};
 use crate::{
-    io::texture::{load_texture_rgba8_from_bytes, TextureIoError},
+    io::texture::{load_texture_rgba8_from_bytes_raw, TextureIoError},
     Material, Mesh, Scene, Transform,
 };
 use glam::{Mat3, Mat4, Quat, Vec2, Vec3, Vec4};
@@ -80,6 +80,8 @@ struct GltfRoot {
     materials: Vec<MaterialDef>,
     #[serde(default)]
     textures: Vec<TextureDef>,
+    #[serde(default)]
+    samplers: Vec<SamplerDef>,
     #[serde(default)]
     images: Vec<ImageDef>,
     #[serde(default)]
@@ -176,6 +178,20 @@ struct TextureInfoDef {
 struct TextureDef {
     #[serde(default)]
     source: Option<usize>,
+    #[serde(default)]
+    sampler: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct SamplerDef {
+    #[serde(rename = "magFilter", default)]
+    mag_filter: Option<u32>,
+    #[serde(rename = "minFilter", default)]
+    min_filter: Option<u32>,
+    #[serde(rename = "wrapS", default)]
+    wrap_s: Option<u32>,
+    #[serde(rename = "wrapT", default)]
+    wrap_t: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -896,6 +912,48 @@ fn map_texture_io_error(err: TextureIoError) -> GltfError {
     }
 }
 
+fn parse_wrap_mode(v: Option<u32>) -> TextureWrapMode {
+    match v.unwrap_or(10_497) {
+        33_071 => TextureWrapMode::ClampToEdge,
+        33_648 => TextureWrapMode::MirroredRepeat,
+        _ => TextureWrapMode::Repeat,
+    }
+}
+
+fn parse_mag_filter(v: Option<u32>) -> TextureFilter {
+    match v.unwrap_or(9_729) {
+        9_728 => TextureFilter::Nearest,
+        _ => TextureFilter::Linear,
+    }
+}
+
+fn parse_min_filter(v: Option<u32>) -> TextureFilter {
+    match v.unwrap_or(9_987) {
+        9_728 | 9_984 | 9_986 => TextureFilter::Nearest,
+        _ => TextureFilter::Linear,
+    }
+}
+
+fn texture_sampler_for_texture(root: &GltfRoot, texture_index: usize) -> Result<TextureSampler, GltfError> {
+    let tex_def = root
+        .textures
+        .get(texture_index)
+        .ok_or(GltfError::InvalidIndex)?;
+
+    let sampler_def = match tex_def.sampler {
+        Some(s) => Some(root.samplers.get(s).ok_or(GltfError::InvalidIndex)?),
+        None => None,
+    };
+
+    let sampler = TextureSampler {
+        wrap_s: parse_wrap_mode(sampler_def.and_then(|s| s.wrap_s)),
+        wrap_t: parse_wrap_mode(sampler_def.and_then(|s| s.wrap_t)),
+        min_filter: parse_min_filter(sampler_def.and_then(|s| s.min_filter)),
+        mag_filter: parse_mag_filter(sampler_def.and_then(|s| s.mag_filter)),
+    };
+    Ok(sampler)
+}
+
 fn ensure_base_color_texture_handle(
     root: &GltfRoot,
     buffers: &[Vec<u8>],
@@ -916,10 +974,12 @@ fn ensure_base_color_texture_handle(
         .textures
         .get(texture_index)
         .ok_or(GltfError::InvalidIndex)?;
+    let sampler = texture_sampler_for_texture(root, texture_index)?;
     let image_index = tex_def.source.ok_or(GltfError::MissingImageSource)?;
     let bytes = load_image_bytes(root, buffers, base_dir, image_index)?;
-    let mut texture = load_texture_rgba8_from_bytes(&bytes).map_err(map_texture_io_error)?;
+    let mut texture = load_texture_rgba8_from_bytes_raw(&bytes).map_err(map_texture_io_error)?;
     linearize_base_color_texture(&mut texture);
+    texture.sampler = sampler;
     let handle = scene.add_texture(texture);
     *slot = Some(handle);
     Ok(handle)
@@ -1653,6 +1713,7 @@ pub fn load_gltf_str_at_time(
 mod tests {
     use super::*;
     use crate::{Camera, DebugView, Projection, Renderer, RendererConfig};
+    use crate::texture::{TextureFilter, TextureWrapMode};
 
     fn tiny_gltf_inline() -> String {
         let mut bytes = Vec::new();
@@ -1760,6 +1821,88 @@ mod tests {
 ],
 "images":[{{"uri":"data:image/png;base64,{image_payload}"}}],
 "textures":[{{"source":0}}],
+"materials":[{{
+  "pbrMetallicRoughness":{{
+    "baseColorFactor":[0.5,1.0,1.0,1.0],
+    "baseColorTexture":{{"index":0,"texCoord":0}}
+  }}
+}}],
+"meshes":[{{"primitives":[{{
+  "attributes":{{"POSITION":0,"TEXCOORD_0":1}},
+  "indices":2,
+  "material":0
+}}]}}],
+"nodes":[{{"mesh":0}}],
+"scenes":[{{"nodes":[0]}}],
+"scene":0
+}}"#
+        )
+    }
+
+    fn tiny_textured_gltf_inline_with_sampler() -> String {
+        let mut geom = Vec::new();
+
+        let positions = [
+            -1.0f32, 1.0, 0.0, //
+            1.0, 1.0, 0.0, //
+            1.0, -1.0, 0.0, //
+            -1.0, -1.0, 0.0,
+        ];
+        for v in positions {
+            geom.extend_from_slice(&v.to_le_bytes());
+        }
+
+        let uvs = [
+            -0.25f32, 0.0, //
+            1.25, 0.0, //
+            1.25, 1.0, //
+            -0.25, 1.0,
+        ];
+        for v in uvs {
+            geom.extend_from_slice(&v.to_le_bytes());
+        }
+
+        let indices = [0u16, 1u16, 2u16, 0u16, 2u16, 3u16];
+        for i in indices {
+            geom.extend_from_slice(&i.to_le_bytes());
+        }
+
+        let mut image_rgba = image::RgbaImage::new(2, 2);
+        image_rgba.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
+        image_rgba.put_pixel(1, 0, image::Rgba([0, 255, 0, 255]));
+        image_rgba.put_pixel(0, 1, image::Rgba([0, 0, 255, 255]));
+        image_rgba.put_pixel(1, 1, image::Rgba([255, 255, 255, 255]));
+
+        let mut png_bytes = Vec::new();
+        {
+            let dyn_img = image::DynamicImage::ImageRgba8(image_rgba);
+            let mut cursor = std::io::Cursor::new(&mut png_bytes);
+            dyn_img
+                .write_to(&mut cursor, image::ImageFormat::Png)
+                .unwrap();
+        }
+
+        use base64::Engine as _;
+        let geom_payload = base64::engine::general_purpose::STANDARD.encode(geom);
+        let image_payload = base64::engine::general_purpose::STANDARD.encode(png_bytes);
+
+        format!(
+            r#"{{
+"asset":{{"version":"2.0"}},
+"buffers":[{{"uri":"data:application/octet-stream;base64,{geom_payload}","byteLength":92}}],
+"bufferViews":[
+  {{"buffer":0,"byteOffset":0,"byteLength":48}},
+  {{"buffer":0,"byteOffset":48,"byteLength":32}},
+  {{"buffer":0,"byteOffset":80,"byteLength":12}}
+],
+"accessors":[
+  {{"bufferView":0,"componentType":5126,"count":4,"type":"VEC3"}},
+  {{"bufferView":1,"componentType":5126,"count":4,"type":"VEC2"}},
+  {{"bufferView":2,"componentType":5123,"count":6,"type":"SCALAR"}}
+],
+"images":[{{"uri":"data:image/png;base64,{image_payload}"}}],
+"samplers":[{{"wrapS":33071,"wrapT":33648,"magFilter":9728,"minFilter":9987}}],
+"textures":[{{"sampler":0,"source":0}}],
 "materials":[{{
   "pbrMetallicRoughness":{{
     "baseColorFactor":[0.5,1.0,1.0,1.0],
@@ -2009,8 +2152,21 @@ mod tests {
         let mut img = crate::targets::ImageTarget::new(32, 32);
         renderer.render_image(&scene, &mut img);
 
-        const EXPECTED: u64 = 18_236_220_368_152_172_020;
+        const EXPECTED: u64 = 4_394_196_463_351_269_805;
         assert_eq!(img.hash64(), EXPECTED);
+    }
+
+    #[test]
+    fn gltf_base_color_sampler_wrap_and_filter_are_applied() {
+        let gltf = tiny_textured_gltf_inline_with_sampler();
+        let scene = load_gltf_str(&gltf).unwrap();
+        let (_mesh, mat, _xf) = scene.iter_objects().next().unwrap();
+        let h = mat.map_kd.expect("expected baseColor texture");
+        let tex = scene.texture(h).unwrap();
+        assert_eq!(tex.sampler.wrap_s, TextureWrapMode::ClampToEdge);
+        assert_eq!(tex.sampler.wrap_t, TextureWrapMode::MirroredRepeat);
+        assert_eq!(tex.sampler.mag_filter, TextureFilter::Nearest);
+        assert_eq!(tex.sampler.min_filter, TextureFilter::Linear);
     }
 
     #[test]

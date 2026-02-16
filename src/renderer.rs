@@ -204,6 +204,10 @@ impl Renderer {
         t
     }
 
+    fn display_aspect(&self) -> f32 {
+        self.config.width() as f32 / (self.config.height().max(1) as f32)
+    }
+
     pub fn render_with_stats(&self, scene: &Scene, target: &mut BufferTarget) -> RenderStats {
         let mut stats = RenderStats::default();
         let total_t0 = Instant::now();
@@ -233,10 +237,11 @@ impl Renderer {
         stats.gbuffer_alloc = gbuf_t0.elapsed();
 
         let raster_t0 = Instant::now();
+        let camera_aspect = self.display_aspect();
         if self.config.tile_binning {
-            raster::render_to_gbuffer_tiled(scene, &mut gbuf);
+            raster::render_to_gbuffer_tiled_with_camera_aspect(scene, &mut gbuf, camera_aspect);
         } else {
-            raster::render_to_gbuffer(scene, &mut gbuf);
+            raster::render_to_gbuffer_with_camera_aspect(scene, &mut gbuf, camera_aspect);
         }
         stats.raster = raster_t0.elapsed();
 
@@ -262,10 +267,11 @@ impl Renderer {
             }
             _ => GBuffer::new(self.config.width(), self.config.height()),
         };
+        let camera_aspect = self.display_aspect();
         if self.config.tile_binning {
-            raster::render_to_gbuffer_tiled(scene, &mut gbuf);
+            raster::render_to_gbuffer_tiled_with_camera_aspect(scene, &mut gbuf, camera_aspect);
         } else {
-            raster::render_to_gbuffer(scene, &mut gbuf);
+            raster::render_to_gbuffer_with_camera_aspect(scene, &mut gbuf, camera_aspect);
         }
         match self.config.glyph_mode() {
             GlyphMode::HalfBlock => self.map_gbuffer_to_buffer_half_block(&gbuf, target),
@@ -657,10 +663,11 @@ impl Renderer {
         }
         target.clear_rgba(0, 0, 0, 0);
         let mut gbuf = GBuffer::new(self.config.width(), self.config.height());
+        let camera_aspect = self.display_aspect();
         if self.config.tile_binning {
-            raster::render_to_gbuffer_tiled(scene, &mut gbuf);
+            raster::render_to_gbuffer_tiled_with_camera_aspect(scene, &mut gbuf, camera_aspect);
         } else {
-            raster::render_to_gbuffer(scene, &mut gbuf);
+            raster::render_to_gbuffer_with_camera_aspect(scene, &mut gbuf, camera_aspect);
         }
         self.map_gbuffer_to_image(&gbuf, target);
     }
@@ -689,10 +696,11 @@ impl Renderer {
         stats.gbuffer_alloc = t_gbuf.elapsed();
 
         let t_raster = Instant::now();
+        let camera_aspect = self.display_aspect();
         if self.config.tile_binning {
-            raster::render_to_gbuffer_tiled(scene, &mut gbuf);
+            raster::render_to_gbuffer_tiled_with_camera_aspect(scene, &mut gbuf, camera_aspect);
         } else {
-            raster::render_to_gbuffer(scene, &mut gbuf);
+            raster::render_to_gbuffer_with_camera_aspect(scene, &mut gbuf, camera_aspect);
         }
         stats.raster = t_raster.elapsed();
 
