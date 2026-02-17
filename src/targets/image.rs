@@ -8,11 +8,12 @@ pub struct ImageTarget {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PngWriteError {
     DimensionTooLarge,
+    ChunkTooLarge,
 }
 
 #[cfg(feature = "png")]
-fn append_chunk(out: &mut Vec<u8>, kind: [u8; 4], data: &[u8]) {
-    let len = u32::try_from(data.len()).unwrap_or(u32::MAX);
+fn append_chunk(out: &mut Vec<u8>, kind: [u8; 4], data: &[u8]) -> Result<(), PngWriteError> {
+    let len = chunk_len(data.len())?;
     out.extend_from_slice(&len.to_be_bytes());
     out.extend_from_slice(&kind);
     out.extend_from_slice(data);
@@ -25,6 +26,12 @@ fn append_chunk(out: &mut Vec<u8>, kind: [u8; 4], data: &[u8]) {
     }
     crc = !crc;
     out.extend_from_slice(&crc.to_be_bytes());
+    Ok(())
+}
+
+#[cfg(feature = "png")]
+fn chunk_len(len: usize) -> Result<u32, PngWriteError> {
+    u32::try_from(len).map_err(|_| PngWriteError::ChunkTooLarge)
 }
 
 #[cfg(feature = "png")]
@@ -158,9 +165,9 @@ impl ImageTarget {
         ihdr.push(0u8);
         ihdr.push(0u8);
 
-        append_chunk(&mut out, *b"IHDR", &ihdr);
-        append_chunk(&mut out, *b"IDAT", &zlib);
-        append_chunk(&mut out, *b"IEND", &[]);
+        append_chunk(&mut out, *b"IHDR", &ihdr)?;
+        append_chunk(&mut out, *b"IDAT", &zlib)?;
+        append_chunk(&mut out, *b"IEND", &[])?;
 
         Ok(out)
     }
@@ -195,5 +202,15 @@ mod tests {
         let h1 = img.hash64();
         let h2 = img.hash64();
         assert_eq!(h1, h2);
+    }
+
+    #[cfg(feature = "png")]
+    #[test]
+    fn png_chunk_len_rejects_oversized_input_len() {
+        assert_eq!(super::chunk_len(u32::MAX as usize), Ok(u32::MAX));
+        if usize::BITS > 32 {
+            let err = super::chunk_len((u32::MAX as usize) + 1).unwrap_err();
+            assert_eq!(err, super::PngWriteError::ChunkTooLarge);
+        }
     }
 }
