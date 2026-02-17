@@ -497,14 +497,13 @@ pub fn load_obj_with_mtl_opts(
 
     if let Some(mtl_name) = &parsed.mtllib {
         let mtl_path = resolve_mtl_path(path, mtl_name);
-        if let Ok(mtl_src) = read_to_string(&mtl_path) {
-            let lib = parse_mtl(&mtl_src).map_err(|_| ObjError::MtlParse)?;
-            for (n, m) in lib.names.into_iter().zip(lib.materials.into_iter()) {
-                let idx = materials.len() as u32;
-                mat_map.insert(n.clone(), idx);
-                material_names.push(n);
-                materials.push(m);
-            }
+        let mtl_src = read_to_string(&mtl_path)?;
+        let lib = parse_mtl(&mtl_src).map_err(|_| ObjError::MtlParse)?;
+        for (n, m) in lib.names.into_iter().zip(lib.materials.into_iter()) {
+            let idx = materials.len() as u32;
+            mat_map.insert(n.clone(), idx);
+            material_names.push(n);
+            materials.push(m);
         }
     }
 
@@ -589,6 +588,10 @@ pub fn load_obj_with_mtl_str_opts(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     #[test]
     fn obj_triangle_parses_and_assigns_material() {
@@ -611,6 +614,31 @@ Kd 1 0 0
         assert_eq!(loaded.material_names[1], "Red");
         assert_eq!(loaded.tri_materials.len(), 1);
         assert_eq!(loaded.tri_materials[0], 1);
+    }
+
+    #[test]
+    fn obj_file_loader_errors_when_mtllib_is_missing() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("ascii3d-obj-missing-mtl-{}", nonce));
+        fs::create_dir_all(&dir).unwrap();
+        let obj_path = dir.join("model.obj");
+        let obj = r"
+mtllib missing.mtl
+v 0 0 0
+v 1 0 0
+v 0 1 0
+f 1 2 3
+";
+        fs::write(&obj_path, obj).unwrap();
+
+        let err = load_obj_with_mtl(&obj_path).unwrap_err();
+        assert!(matches!(err, ObjError::Io));
+
+        let _ = fs::remove_file(&obj_path);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
