@@ -348,7 +348,7 @@ struct PerspectiveCameraDef {
 #[derive(Deserialize)]
 struct OrthographicCameraDef {
     #[serde(rename = "xmag")]
-    _xmag: f32,
+    xmag: f32,
     ymag: f32,
     znear: f32,
     zfar: f32,
@@ -1998,7 +1998,10 @@ fn camera_projection_from_def(def: &CameraDef) -> Option<Projection> {
         }
         "orthographic" => {
             let o = def.orthographic.as_ref()?;
-            if !(o.ymag.is_finite()
+            if !(o.xmag.is_finite()
+                && o.xmag > 0.0
+                && o.ymag.is_finite()
+                && o.ymag > 0.0
                 && o.znear.is_finite()
                 && o.zfar.is_finite()
                 && o.zfar > o.znear)
@@ -2006,6 +2009,7 @@ fn camera_projection_from_def(def: &CameraDef) -> Option<Projection> {
                 return None;
             }
             Some(Projection::Orthographic {
+                half_width: Some(o.xmag),
                 half_height: o.ymag,
                 near: o.znear,
                 far: o.zfar,
@@ -2446,6 +2450,17 @@ mod tests {
         )
     }
 
+    fn tiny_gltf_ortho_camera_inline() -> String {
+        r#"{
+"asset":{"version":"2.0"},
+"cameras":[{"type":"orthographic","orthographic":{"xmag":2.0,"ymag":1.0,"znear":0.1,"zfar":10.0}}],
+"nodes":[{"camera":0}],
+"scenes":[{"nodes":[0]}],
+"scene":0
+}"#
+        .to_string()
+    }
+
     fn tiny_textured_gltf_inline() -> String {
         let mut geom = Vec::new();
 
@@ -2805,6 +2820,31 @@ mod tests {
     }
 
     #[test]
+    fn gltf_orthographic_camera_respects_xmag() {
+        let gltf = tiny_gltf_ortho_camera_inline();
+        let scene = load_gltf_str(&gltf).unwrap();
+
+        match scene.camera.projection {
+            Projection::Orthographic {
+                half_width,
+                half_height,
+                near,
+                far,
+            } => {
+                assert_eq!(half_width, Some(2.0));
+                assert!((half_height - 1.0).abs() < 1e-6);
+                assert!((near - 0.1).abs() < 1e-6);
+                assert!((far - 10.0).abs() < 1e-6);
+            }
+            _ => panic!("expected orthographic projection"),
+        }
+
+        let p = scene.camera.projection_matrix(5.0);
+        assert!((p.x_axis.x - 0.5).abs() < 1e-6);
+        assert!((p.y_axis.y - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
     fn gltf_inline_renders_deterministically() {
         let gltf = tiny_gltf_inline();
         let scene = load_gltf_str(&gltf).unwrap();
@@ -2839,6 +2879,7 @@ mod tests {
         scene.camera = Camera::new(
             Transform::IDENTITY,
             Projection::Orthographic {
+                half_width: None,
                 half_height: 1.0,
                 near: -10.0,
                 far: 10.0,
@@ -2883,6 +2924,7 @@ mod tests {
             scene.camera = Camera::new(
                 Transform::IDENTITY,
                 Projection::Orthographic {
+                    half_width: None,
                     half_height: 1.0,
                     near: -10.0,
                     far: 10.0,
@@ -3002,6 +3044,7 @@ mod tests {
             scene.camera = Camera::new(
                 Transform::IDENTITY,
                 Projection::Orthographic {
+                    half_width: None,
                     half_height: 2.0,
                     near: -10.0,
                     far: 10.0,

@@ -1552,6 +1552,7 @@ mod tests {
         scene.camera = Camera::new(
             Transform::IDENTITY,
             Projection::Orthographic {
+                half_width: None,
                 half_height: 1.0,
                 near: -10.0,
                 far: 10.0,

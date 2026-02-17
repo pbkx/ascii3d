@@ -10,6 +10,7 @@ pub enum Projection {
         far: f32,
     },
     Orthographic {
+        half_width: Option<f32>,
         half_height: f32,
         near: f32,
         far: f32,
@@ -67,12 +68,13 @@ impl Projection {
                 )
             }
             Projection::Orthographic {
+                half_width,
                 half_height,
                 near,
                 far,
             } => {
                 let half_h = *half_height;
-                let half_w = half_h * aspect;
+                let half_w = half_width.unwrap_or(half_h * aspect);
 
                 let left = -half_w;
                 let right = half_w;
