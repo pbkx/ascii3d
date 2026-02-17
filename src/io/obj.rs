@@ -28,6 +28,8 @@ pub enum ObjError {
     MissingVertex,
     MissingFaceVertex,
     MtlParse,
+    MultiMaterialMesh,
+    InvalidMaterialIndex,
 }
 
 impl fmt::Display for ObjError {
@@ -39,6 +41,11 @@ impl fmt::Display for ObjError {
             Self::MissingVertex => write!(f, "vertex index out of range"),
             Self::MissingFaceVertex => write!(f, "face missing vertex"),
             Self::MtlParse => write!(f, "failed to parse mtl"),
+            Self::MultiMaterialMesh => write!(
+                f,
+                "obj uses multiple materials; use load_obj_with_mtl() and tri_materials mapping"
+            ),
+            Self::InvalidMaterialIndex => write!(f, "material index out of range"),
         }
     }
 }
@@ -517,7 +524,7 @@ pub fn load_obj_with_mtl_mesh_materials(
     path: impl AsRef<Path>,
 ) -> Result<(Mesh, Vec<Material>), ObjError> {
     let loaded = load_obj_with_mtl(path)?;
-    Ok((loaded.mesh, loaded.materials))
+    mesh_materials_single_material_only(loaded)
 }
 
 pub fn load_obj_with_mtl_str_mesh_materials(
@@ -525,7 +532,30 @@ pub fn load_obj_with_mtl_str_mesh_materials(
     mtl_src: Option<&str>,
 ) -> Result<(Mesh, Vec<Material>), ObjError> {
     let loaded = load_obj_with_mtl_str(obj_src, mtl_src)?;
-    Ok((loaded.mesh, loaded.materials))
+    mesh_materials_single_material_only(loaded)
+}
+
+fn mesh_materials_single_material_only(loaded: LoadedObj) -> Result<(Mesh, Vec<Material>), ObjError> {
+    let LoadedObj {
+        mesh,
+        material_names: _,
+        materials,
+        tri_materials,
+    } = loaded;
+
+    let Some(&first_mat) = tri_materials.first() else {
+        return Ok((mesh, materials));
+    };
+    if tri_materials.iter().any(|&m| m != first_mat) {
+        return Err(ObjError::MultiMaterialMesh);
+    }
+
+    let mat_index = first_mat as usize;
+    let material = materials
+        .get(mat_index)
+        .cloned()
+        .ok_or(ObjError::InvalidMaterialIndex)?;
+    Ok((mesh, vec![material]))
 }
 
 pub fn load_obj_with_mtl_str(obj_src: &str, mtl_src: Option<&str>) -> Result<LoadedObj, ObjError> {
@@ -673,5 +703,49 @@ f 1 2 3 4 5
             .sum();
 
         assert!((tri_area_sum - 3.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn obj_mesh_materials_convenience_errors_on_multi_material_mesh() {
+        let obj = r"
+v 0 0 0
+v 1 0 0
+v 0 1 0
+v 1 1 0
+usemtl Red
+f 1 2 3
+usemtl Green
+f 2 4 3
+";
+        let mtl = r"
+newmtl Red
+Kd 1 0 0
+newmtl Green
+Kd 0 1 0
+";
+        let err = load_obj_with_mtl_str_mesh_materials(obj, Some(mtl)).unwrap_err();
+        assert!(matches!(err, ObjError::MultiMaterialMesh));
+    }
+
+    #[test]
+    fn obj_mesh_materials_convenience_keeps_only_used_single_material() {
+        let obj = r"
+v 0 0 0
+v 1 0 0
+v 0 1 0
+usemtl Green
+f 1 2 3
+";
+        let mtl = r"
+newmtl Red
+Kd 1 0 0
+newmtl Green
+Kd 0 1 0
+";
+        let (_mesh, mats) = load_obj_with_mtl_str_mesh_materials(obj, Some(mtl)).unwrap();
+        assert_eq!(mats.len(), 1);
+        assert!((mats[0].kd.x - 0.0).abs() < 1e-6);
+        assert!((mats[0].kd.y - 1.0).abs() < 1e-6);
+        assert!((mats[0].kd.z - 0.0).abs() < 1e-6);
     }
 }
