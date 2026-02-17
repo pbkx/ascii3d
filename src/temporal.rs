@@ -24,7 +24,7 @@ pub struct TemporalState {
     width: usize,
     height: usize,
     luma_ema: Vec<f32>,
-    glyph_idx: Vec<u16>,
+    glyph_idx: Vec<usize>,
 }
 
 impl Default for TemporalState {
@@ -58,7 +58,7 @@ impl TemporalState {
         self.height = height;
         let n = width.saturating_mul(height);
         self.luma_ema = vec![0.0; n];
-        self.glyph_idx = vec![u16::MAX; n];
+        self.glyph_idx = vec![usize::MAX; n];
     }
 
     pub fn resize(&mut self, width: usize, height: usize) {
@@ -74,7 +74,7 @@ impl TemporalState {
         quantizer: &mut TemporalQuantizer<'_>,
         cfg: &TemporalConfig,
     ) -> usize {
-        self.step(x, y, luma, ramp_len, quantizer, cfg) as usize
+        self.step(x, y, luma, ramp_len, quantizer, cfg)
     }
 
     pub(crate) fn step(
@@ -85,14 +85,14 @@ impl TemporalState {
         ramp_len: usize,
         quantizer: &mut TemporalQuantizer<'_>,
         cfg: &TemporalConfig,
-    ) -> u16 {
+    ) -> usize {
         let width = self.width;
         let idx = y * width + x;
         let raw_luma = raw_luma.clamp(0.0, 1.0);
         let prev_idx = self.glyph_idx[idx];
         let prev_ema = self.luma_ema[idx];
 
-        let ema = if prev_idx == u16::MAX {
+        let ema = if prev_idx == usize::MAX {
             raw_luma
         } else {
             let a = cfg.ema_alpha.clamp(0.0, 1.0);
@@ -101,7 +101,7 @@ impl TemporalState {
 
         let cand_idx = quantizer.quantize(x, y, ema, ramp_len);
 
-        let out_idx = if prev_idx != u16::MAX && prev_idx != cand_idx {
+        let out_idx = if prev_idx != usize::MAX && prev_idx != cand_idx {
             let diff = (ema - prev_ema).abs();
             let delta = if prev_idx > cand_idx {
                 prev_idx - cand_idx
@@ -129,15 +129,15 @@ pub(crate) enum TemporalQuantizer<'a> {
 }
 
 impl<'a> TemporalQuantizer<'a> {
-    pub(crate) fn quantize(&mut self, x: usize, y: usize, luma: f32, ramp_len: usize) -> u16 {
+    pub(crate) fn quantize(&mut self, x: usize, y: usize, luma: f32, ramp_len: usize) -> usize {
         match self {
-            Self::Dither(d) => d.quantize_index(luma, ramp_len, x, y) as u16,
+            Self::Dither(d) => d.quantize_index(luma, ramp_len, x, y),
             Self::Anchored => anchored_quantize(x, y, luma, ramp_len),
         }
     }
 }
 
-fn anchored_quantize(x: usize, y: usize, luma: f32, ramp_len: usize) -> u16 {
+fn anchored_quantize(x: usize, y: usize, luma: f32, ramp_len: usize) -> usize {
     if ramp_len <= 1 {
         return 0;
     }
@@ -145,14 +145,14 @@ fn anchored_quantize(x: usize, y: usize, luma: f32, ramp_len: usize) -> u16 {
     let s = (luma.clamp(0.0, 1.0)) * max;
     let lo = s.floor() as i32;
     if lo as usize >= ramp_len - 1 {
-        return (ramp_len - 1) as u16;
+        return ramp_len - 1;
     }
     let frac = s - (lo as f32);
     let u = hash01(x as u32, y as u32);
     if frac > u {
-        (lo + 1) as u16
+        (lo + 1) as usize
     } else {
-        lo as u16
+        lo as usize
     }
 }
 
@@ -166,4 +166,25 @@ fn hash01(x: u32, y: u32) -> f32 {
     // Use the top 24 bits to get a stable [0,1) float without platform-specific quirks.
     let top24 = v >> 8;
     (top24 as f32) * (1.0 / 16_777_216.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TemporalConfig, TemporalQuantizer, TemporalState};
+
+    #[test]
+    fn temporal_index_supports_large_ramps() {
+        let mut state = TemporalState::new();
+        state.ensure_size(1, 1);
+        let mut q = TemporalQuantizer::Anchored;
+        let idx = state.step_index(
+            0,
+            0,
+            1.0,
+            (u16::MAX as usize) + 2,
+            &mut q,
+            &TemporalConfig::default(),
+        );
+        assert_eq!(idx, (u16::MAX as usize) + 1);
+    }
 }
