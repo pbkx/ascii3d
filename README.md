@@ -20,7 +20,7 @@ install the `ascii3d` crate by adding it as a dependency in `Cargo.toml`.
 use path dependency in your Cargo.toml
 ```toml
 [dependencies]
-ascii3d = { path = "../3d-ascii-renderer" }
+ascii3d = { path = "../ascii3d" }
 ```
 
 ### windows
@@ -28,7 +28,7 @@ ascii3d = { path = "../3d-ascii-renderer" }
 use path dependency in your Cargo.toml
 ```toml
 [dependencies]
-ascii3d = { path = "../3d-ascii-renderer" }
+ascii3d = { path = "../ascii3d" }
 ```
 
 for terminal rendering, use a modern terminal like windows terminal or alacritty
@@ -40,7 +40,7 @@ install developer tools via ```xcode-select --install```
 use path dependency in your Cargo.toml
 ```toml
 [dependencies]
-ascii3d = { path = "../3d-ascii-renderer" }
+ascii3d = { path = "../ascii3d" }
 ```
 
 # build instructions
@@ -53,7 +53,7 @@ dependencies are: rust stable toolchain (`cargo`, `rustc`)
 
 ```
 git clone <this-repo-url>
-cd 3d-ascii-renderer
+cd ascii3d
 cargo build
 cargo test --all-features
 ```
@@ -64,7 +64,7 @@ have cargo and stable toolchain installed
 
 ```
 git clone <this-repo-url>
-cd 3d-ascii-renderer
+cd ascii3d
 cargo build
 cargo test --all-features
 ```
@@ -75,7 +75,7 @@ install developer tools via ```xcode-select --install```
 
 ```
 git clone <this-repo-url>
-cd 3d-ascii-renderer
+cd ascii3d
 cargo build
 cargo test --all-features
 ```
