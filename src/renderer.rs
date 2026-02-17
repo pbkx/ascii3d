@@ -1,6 +1,6 @@
 use crate::{
-    AlphaMode,
-    debug::{rgb_for_view, scalar_for_view, DebugView},
+    AlphaMode, Light,
+    debug::{rgb_for_view_with_lights, scalar_for_view_with_lights, DebugView},
     dither::{Dither, DitherMode},
     framegraph::{
         apply_contrast, apply_edge_enhance, apply_tone_map_reinhard, FrameGraph, FramePassId,
@@ -210,6 +210,39 @@ impl Renderer {
         self.config.width() as f32 / (self.config.height().max(1) as f32)
     }
 
+    fn scene_lights_in_view(scene: &Scene) -> Vec<Light> {
+        if scene.lights.is_empty() {
+            return Vec::new();
+        }
+        let view = scene.camera.view_matrix();
+        scene
+            .lights
+            .iter()
+            .filter_map(|light| match *light {
+                Light::Directional {
+                    direction,
+                    color,
+                    intensity,
+                } => {
+                    let dir = (view * direction.extend(0.0)).truncate().normalize_or_zero();
+                    if dir.length_squared() > 0.0 {
+                        Some(Light::directional(dir, color, intensity))
+                    } else {
+                        None
+                    }
+                }
+                Light::Point {
+                    position,
+                    color,
+                    intensity,
+                } => {
+                    let pos = (view * position.extend(1.0)).truncate();
+                    Some(Light::point(pos, color, intensity))
+                }
+            })
+            .collect()
+    }
+
     fn scene_has_blend(scene: &Scene) -> bool {
         scene
             .iter_objects()
@@ -222,6 +255,7 @@ impl Renderer {
         samples: Vec<raster::BlendSample>,
         rgb: &mut [Vec3],
         depth: &mut [f32],
+        lights: &[Light],
     ) {
         let mut keyed: Vec<(usize, usize, raster::BlendSample)> = samples
             .into_iter()
@@ -242,9 +276,10 @@ impl Renderer {
         });
 
         for (i, _order, s) in keyed {
-            let src = rgb_for_view(
+            let src = rgb_for_view_with_lights(
                 self.config.debug_view(),
                 self.config.shader(),
+                lights,
                 s.depth,
                 s.view_pos,
                 s.normal,
@@ -265,6 +300,7 @@ impl Renderer {
         gbuf: &GBuffer,
         rgb: &mut [Vec3],
         depth: &mut [f32],
+        lights: &[Light],
     ) {
         if !Self::scene_has_blend(scene) {
             return;
@@ -276,14 +312,19 @@ impl Renderer {
             self.display_aspect(),
             gbuf.depth_slice(),
         );
-        self.composite_samples(gbuf.width(), samples, rgb, depth);
+        self.composite_samples(gbuf.width(), samples, rgb, depth, lights);
     }
 
-    fn shade_scene_to_rgb_depth(&self, scene: &Scene, gbuf: &GBuffer) -> (Vec<Vec3>, Vec<f32>) {
+    fn shade_scene_to_rgb_depth(
+        &self,
+        scene: &Scene,
+        gbuf: &GBuffer,
+        lights: &[Light],
+    ) -> (Vec<Vec3>, Vec<f32>) {
         let mut rgb = vec![Vec3::ZERO; gbuf.width().saturating_mul(gbuf.height())];
-        self.shade_gbuffer_to_rgb_buffer(gbuf, &mut rgb);
+        self.shade_gbuffer_to_rgb_buffer(gbuf, &mut rgb, lights);
         let mut depth = gbuf.depth_slice().to_vec();
-        self.composite_blend_samples(scene, gbuf, &mut rgb, &mut depth);
+        self.composite_blend_samples(scene, gbuf, &mut rgb, &mut depth, lights);
         (rgb, depth)
     }
 
@@ -325,16 +366,17 @@ impl Renderer {
         stats.raster = raster_t0.elapsed();
 
         let map_t0 = Instant::now();
+        let lights = Self::scene_lights_in_view(scene);
         if Self::scene_has_blend(scene) {
-            let (mut rgb, depth) = self.shade_scene_to_rgb_depth(scene, &gbuf);
+            let (mut rgb, depth) = self.shade_scene_to_rgb_depth(scene, &gbuf, &lights);
             if self.config.post_process().has_any_post_pass() {
                 self.run_post_process_passes(&mut rgb, gbuf.width(), gbuf.height());
             }
             self.map_rgb_depth_to_buffer(&rgb, &depth, target);
         } else {
             match self.config.glyph_mode() {
-                GlyphMode::HalfBlock => self.map_gbuffer_to_buffer_half_block(&gbuf, target),
-                _ => self.map_gbuffer_to_buffer(&gbuf, target),
+                GlyphMode::HalfBlock => self.map_gbuffer_to_buffer_half_block(&gbuf, target, &lights),
+                _ => self.map_gbuffer_to_buffer(&gbuf, target, &lights),
             }
         }
         stats.map = map_t0.elapsed();
@@ -360,16 +402,17 @@ impl Renderer {
         } else {
             raster::render_to_gbuffer_with_camera_aspect(scene, &mut gbuf, camera_aspect);
         }
+        let lights = Self::scene_lights_in_view(scene);
         if Self::scene_has_blend(scene) {
-            let (mut rgb, depth) = self.shade_scene_to_rgb_depth(scene, &gbuf);
+            let (mut rgb, depth) = self.shade_scene_to_rgb_depth(scene, &gbuf, &lights);
             if self.config.post_process().has_any_post_pass() {
                 self.run_post_process_passes(&mut rgb, gbuf.width(), gbuf.height());
             }
             self.map_rgb_depth_to_buffer(&rgb, &depth, target);
         } else {
             match self.config.glyph_mode() {
-                GlyphMode::HalfBlock => self.map_gbuffer_to_buffer_half_block(&gbuf, target),
-                _ => self.map_gbuffer_to_buffer(&gbuf, target),
+                GlyphMode::HalfBlock => self.map_gbuffer_to_buffer_half_block(&gbuf, target, &lights),
+                _ => self.map_gbuffer_to_buffer(&gbuf, target, &lights),
             }
         }
     }
@@ -406,7 +449,7 @@ impl Renderer {
         )
     }
 
-    fn shade_gbuffer_to_rgb_buffer(&self, gbuf: &GBuffer, out: &mut [Vec3]) {
+    fn shade_gbuffer_to_rgb_buffer(&self, gbuf: &GBuffer, out: &mut [Vec3], lights: &[Light]) {
         for y in 0..gbuf.height() {
             for x in 0..gbuf.width() {
                 let i = y * gbuf.width() + x;
@@ -418,9 +461,10 @@ impl Renderer {
                     out[i] = Vec3::ZERO;
                     continue;
                 }
-                out[i] = rgb_for_view(
+                out[i] = rgb_for_view_with_lights(
                     self.config.debug_view(),
                     self.config.shader(),
+                    lights,
                     p.depth,
                     p.view_pos,
                     p.normal,
@@ -574,9 +618,9 @@ impl Renderer {
         }
     }
 
-    fn map_gbuffer_to_buffer(&self, gbuf: &GBuffer, target: &mut BufferTarget) {
+    fn map_gbuffer_to_buffer(&self, gbuf: &GBuffer, target: &mut BufferTarget, lights: &[Light]) {
         if self.config.post_process().has_any_post_pass() {
-            self.map_gbuffer_to_buffer_with_post(gbuf, target);
+            self.map_gbuffer_to_buffer_with_post(gbuf, target, lights);
             return;
         }
 
@@ -595,9 +639,10 @@ impl Renderer {
                 if !p.depth.is_finite() {
                     continue;
                 }
-                let shade_scalar = scalar_for_view(
+                let shade_scalar = scalar_for_view_with_lights(
                     self.config.debug_view(),
                     self.config.shader(),
+                    lights,
                     p.depth,
                     p.view_pos,
                     p.normal,
@@ -606,9 +651,10 @@ impl Renderer {
                     p.ns,
                     p.ke,
                 );
-                let rgb = rgb_for_view(
+                let rgb = rgb_for_view_with_lights(
                     self.config.debug_view(),
                     self.config.shader(),
+                    lights,
                     p.depth,
                     p.view_pos,
                     p.normal,
@@ -668,9 +714,14 @@ impl Renderer {
         }
     }
 
-    fn map_gbuffer_to_buffer_with_post(&self, gbuf: &GBuffer, target: &mut BufferTarget) {
+    fn map_gbuffer_to_buffer_with_post(
+        &self,
+        gbuf: &GBuffer,
+        target: &mut BufferTarget,
+        lights: &[Light],
+    ) {
         let mut rgb = vec![Vec3::ZERO; gbuf.width().saturating_mul(gbuf.height())];
-        self.shade_gbuffer_to_rgb_buffer(gbuf, &mut rgb);
+        self.shade_gbuffer_to_rgb_buffer(gbuf, &mut rgb, lights);
         self.run_post_process_passes(&mut rgb, gbuf.width(), gbuf.height());
 
         let dither_mode = self.config.dither_mode();
@@ -742,9 +793,14 @@ impl Renderer {
         }
     }
 
-    fn map_gbuffer_to_buffer_half_block(&self, gbuf: &GBuffer, target: &mut BufferTarget) {
+    fn map_gbuffer_to_buffer_half_block(
+        &self,
+        gbuf: &GBuffer,
+        target: &mut BufferTarget,
+        lights: &[Light],
+    ) {
         if self.config.post_process().has_any_post_pass() {
-            self.map_gbuffer_to_buffer_half_block_with_post(gbuf, target);
+            self.map_gbuffer_to_buffer_half_block_with_post(gbuf, target, lights);
             return;
         }
 
@@ -769,9 +825,10 @@ impl Renderer {
                 if p0_ok && p1_ok {
                     let p0 = p0.unwrap();
                     let p1 = p1.unwrap();
-                    let rgb0 = Self::to_u8_rgb(rgb_for_view(
+                    let rgb0 = Self::to_u8_rgb(rgb_for_view_with_lights(
                         self.config.debug_view(),
                         self.config.shader(),
+                        lights,
                         p0.depth,
                         p0.view_pos,
                         p0.normal,
@@ -780,9 +837,10 @@ impl Renderer {
                         p0.ns,
                         p0.ke,
                     ));
-                    let rgb1 = Self::to_u8_rgb(rgb_for_view(
+                    let rgb1 = Self::to_u8_rgb(rgb_for_view_with_lights(
                         self.config.debug_view(),
                         self.config.shader(),
+                        lights,
                         p1.depth,
                         p1.view_pos,
                         p1.normal,
@@ -795,9 +853,10 @@ impl Renderer {
                     let _ = target.set(x, y, Cell::new('▀', rgb0, rgb1, depth));
                 } else if p0_ok {
                     let p0 = p0.unwrap();
-                    let rgb0 = Self::to_u8_rgb(rgb_for_view(
+                    let rgb0 = Self::to_u8_rgb(rgb_for_view_with_lights(
                         self.config.debug_view(),
                         self.config.shader(),
+                        lights,
                         p0.depth,
                         p0.view_pos,
                         p0.normal,
@@ -809,9 +868,10 @@ impl Renderer {
                     let _ = target.set(x, y, Cell::new('▀', rgb0, Rgb8::BLACK, p0.depth));
                 } else if p1_ok {
                     let p1 = p1.unwrap();
-                    let rgb1 = Self::to_u8_rgb(rgb_for_view(
+                    let rgb1 = Self::to_u8_rgb(rgb_for_view_with_lights(
                         self.config.debug_view(),
                         self.config.shader(),
+                        lights,
                         p1.depth,
                         p1.view_pos,
                         p1.normal,
@@ -836,9 +896,10 @@ impl Renderer {
         &self,
         gbuf: &GBuffer,
         target: &mut BufferTarget,
+        lights: &[Light],
     ) {
         let mut rgb = vec![Vec3::ZERO; gbuf.width().saturating_mul(gbuf.height())];
-        self.shade_gbuffer_to_rgb_buffer(gbuf, &mut rgb);
+        self.shade_gbuffer_to_rgb_buffer(gbuf, &mut rgb, lights);
         self.run_post_process_passes(&mut rgb, gbuf.width(), gbuf.height());
 
         for y in 0..target.height() {
@@ -897,14 +958,15 @@ impl Renderer {
         } else {
             raster::render_to_gbuffer_with_camera_aspect(scene, &mut gbuf, camera_aspect);
         }
+        let lights = Self::scene_lights_in_view(scene);
         if Self::scene_has_blend(scene) {
-            let (mut rgb, depth) = self.shade_scene_to_rgb_depth(scene, &gbuf);
+            let (mut rgb, depth) = self.shade_scene_to_rgb_depth(scene, &gbuf, &lights);
             if self.config.post_process().has_any_post_pass() {
                 self.run_post_process_passes(&mut rgb, gbuf.width(), gbuf.height());
             }
             self.map_rgb_depth_to_image(&rgb, &depth, target);
         } else {
-            self.map_gbuffer_to_image(&gbuf, target);
+            self.map_gbuffer_to_image(&gbuf, target, &lights);
         }
     }
 
@@ -941,14 +1003,15 @@ impl Renderer {
         stats.raster = t_raster.elapsed();
 
         let t_map = Instant::now();
+        let lights = Self::scene_lights_in_view(scene);
         if Self::scene_has_blend(scene) {
-            let (mut rgb, depth) = self.shade_scene_to_rgb_depth(scene, &gbuf);
+            let (mut rgb, depth) = self.shade_scene_to_rgb_depth(scene, &gbuf, &lights);
             if self.config.post_process().has_any_post_pass() {
                 self.run_post_process_passes(&mut rgb, gbuf.width(), gbuf.height());
             }
             self.map_rgb_depth_to_image(&rgb, &depth, target);
         } else {
-            self.map_gbuffer_to_image(&gbuf, target);
+            self.map_gbuffer_to_image(&gbuf, target, &lights);
         }
         stats.map = t_map.elapsed();
 
@@ -972,9 +1035,9 @@ impl Renderer {
 
         target.clear(Cell::new(' ', Rgb8::BLACK, Rgb8::BLACK, f32::INFINITY));
         if matches!(&self.config.glyph_mode, GlyphMode::HalfBlock) {
-            self.map_gbuffer_to_buffer_half_block(gbuf, target);
+            self.map_gbuffer_to_buffer_half_block(gbuf, target, &[]);
         } else {
-            self.map_gbuffer_to_buffer(gbuf, target);
+            self.map_gbuffer_to_buffer(gbuf, target, &[]);
         }
     }
 
@@ -986,13 +1049,13 @@ impl Renderer {
         debug_assert_eq!(gbuf.height(), target.height());
 
         target.clear_rgba(0, 0, 0, 0);
-        self.map_gbuffer_to_image(gbuf, target);
+        self.map_gbuffer_to_image(gbuf, target, &[]);
     }
 
-    fn map_gbuffer_to_image(&self, gbuf: &GBuffer, target: &mut ImageTarget) {
+    fn map_gbuffer_to_image(&self, gbuf: &GBuffer, target: &mut ImageTarget, lights: &[Light]) {
         if self.config.post_process().has_any_post_pass() {
             let mut rgb = vec![Vec3::ZERO; gbuf.width().saturating_mul(gbuf.height())];
-            self.shade_gbuffer_to_rgb_buffer(gbuf, &mut rgb);
+            self.shade_gbuffer_to_rgb_buffer(gbuf, &mut rgb, lights);
             self.run_post_process_passes(&mut rgb, gbuf.width(), gbuf.height());
             for y in 0..target.height() {
                 for x in 0..target.width() {
@@ -1017,9 +1080,10 @@ impl Renderer {
                 if !p.depth.is_finite() {
                     continue;
                 }
-                let rgb = rgb_for_view(
+                let rgb = rgb_for_view_with_lights(
                     self.config.debug_view(),
                     self.config.shader(),
+                    lights,
                     p.depth,
                     p.view_pos,
                     p.normal,
@@ -1040,8 +1104,8 @@ mod tests {
     use crate::camera::Projection;
     use crate::Camera;
     use crate::{
-        AsciiRamp, DebugView, DitherMode, GlyphMode, Material, Mesh, Renderer, RendererConfig,
-        Scene, ShaderId, TemporalConfig, Texture, Transform,
+        AsciiRamp, DebugView, DitherMode, GlyphMode, Light, Material, Mesh, Renderer,
+        RendererConfig, Scene, ShaderId, TemporalConfig, Texture, Transform,
     };
     use glam::{Vec2, Vec3};
 
@@ -1153,7 +1217,7 @@ mod tests {
             },
         ];
 
-        renderer.composite_samples(1, samples, &mut rgb, &mut depth);
+        renderer.composite_samples(1, samples, &mut rgb, &mut depth, &[]);
 
         let expected = Vec3::new(0.5, 0.0, 0.25);
         assert!((rgb[0].x - expected.x).abs() < 1e-6);
@@ -1317,6 +1381,33 @@ mod tests {
         r_lambert.render_image(&scene, &mut img_lambert);
         r_unlit.render_image(&scene, &mut img_unlit);
         assert_ne!(img_lambert.hash64(), img_unlit.hash64());
+    }
+
+    #[test]
+    fn scene_directional_lights_change_lambert_output_hash() {
+        let mut scene_front = Scene::new();
+        scene_front.add_object(
+            Mesh::unit_triangle(),
+            Transform::IDENTITY,
+            Material::default(),
+        );
+        scene_front.add_light(Light::directional(Vec3::new(0.0, 0.0, -1.0), Vec3::ONE, 1.0));
+
+        let mut scene_back = scene_front.clone();
+        scene_back.lights.clear();
+        scene_back.add_light(Light::directional(Vec3::new(0.0, 0.0, 1.0), Vec3::ONE, 1.0));
+
+        let renderer = Renderer::new(
+            RendererConfig::default()
+                .with_size(64, 32)
+                .with_shader_id(ShaderId::Lambert),
+        );
+        let mut img_front = crate::targets::ImageTarget::new(64, 32);
+        let mut img_back = crate::targets::ImageTarget::new(64, 32);
+
+        renderer.render_image(&scene_front, &mut img_front);
+        renderer.render_image(&scene_back, &mut img_back);
+        assert_ne!(img_front.hash64(), img_back.hash64());
     }
 
     #[test]

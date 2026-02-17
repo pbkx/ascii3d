@@ -1,6 +1,6 @@
 use glam::Vec3;
 
-use crate::shader::{BuiltinShader, Shader};
+use crate::{shader::BuiltinShader, Light};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum DebugView {
@@ -51,8 +51,25 @@ pub fn scalar_for_view(
     ns: f32,
     ke: Vec3,
 ) -> f32 {
+    scalar_for_view_with_lights(view, shader, &[], depth, view_pos, normal, kd, ks, ns, ke)
+}
+
+pub fn scalar_for_view_with_lights(
+    view: DebugView,
+    shader: &BuiltinShader,
+    lights: &[Light],
+    depth: f32,
+    view_pos: Vec3,
+    normal: Vec3,
+    kd: Vec3,
+    ks: Vec3,
+    ns: f32,
+    ke: Vec3,
+) -> f32 {
     match view {
-        DebugView::Final => shader.shade_scalar(depth, view_pos, normal, kd, ks, ns, ke),
+        DebugView::Final => {
+            shader.shade_scalar_with_lights(depth, view_pos, normal, kd, ks, ns, ke, lights)
+        }
         DebugView::Depth => ndc_depth_to_unit(depth),
         DebugView::Normals => (0.5 + 0.5 * normal.z).clamp(0.0, 1.0),
         DebugView::Albedo => luma(kd),
@@ -70,8 +87,23 @@ pub fn rgb_for_view(
     ns: f32,
     ke: Vec3,
 ) -> Vec3 {
+    rgb_for_view_with_lights(view, shader, &[], depth, view_pos, normal, kd, ks, ns, ke)
+}
+
+pub fn rgb_for_view_with_lights(
+    view: DebugView,
+    shader: &BuiltinShader,
+    lights: &[Light],
+    depth: f32,
+    view_pos: Vec3,
+    normal: Vec3,
+    kd: Vec3,
+    ks: Vec3,
+    ns: f32,
+    ke: Vec3,
+) -> Vec3 {
     match view {
-        DebugView::Final => shader.shade_rgb(depth, view_pos, normal, kd, ks, ns, ke),
+        DebugView::Final => shader.shade_rgb_with_lights(depth, view_pos, normal, kd, ks, ns, ke, lights),
         DebugView::Depth => Vec3::splat(ndc_depth_to_unit(depth)),
         DebugView::Normals => (normal + Vec3::ONE) * 0.5,
         DebugView::Albedo => kd,
