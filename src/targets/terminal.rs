@@ -13,13 +13,18 @@ pub struct TerminalGuard {
 impl TerminalGuard {
     pub fn new() -> io::Result<Self> {
         terminal::enable_raw_mode()?;
-        crossterm::execute!(
-            io::stdout(),
+        let mut out = io::stdout();
+        if let Err(err) = crossterm::execute!(
+            out,
             terminal::EnterAlternateScreen,
             cursor::Hide,
             terminal::Clear(terminal::ClearType::All),
             cursor::MoveTo(0, 0)
-        )?;
+        ) {
+            let _ = crossterm::execute!(out, cursor::Show, terminal::LeaveAlternateScreen);
+            let _ = terminal::disable_raw_mode();
+            return Err(err);
+        }
         Ok(Self { active: true })
     }
 }
