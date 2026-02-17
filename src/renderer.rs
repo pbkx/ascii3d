@@ -1019,7 +1019,7 @@ impl Renderer {
         stats
     }
 
-    pub fn resolve_gbuffer_to_buffer(&self, gbuf: &GBuffer, target: &mut BufferTarget) {
+    pub fn resolve_gbuffer_to_buffer(&self, scene: &Scene, gbuf: &GBuffer, target: &mut BufferTarget) {
         if target.width() != self.config.width()
             || target.height() != self.config.height()
             || (matches!(&self.config.glyph_mode, GlyphMode::HalfBlock)
@@ -1033,23 +1033,25 @@ impl Renderer {
             debug_assert!(false, "resolve_gbuffer_to_buffer: size mismatch");
         }
 
+        let lights = Self::scene_lights_in_view(scene);
         target.clear(Cell::new(' ', Rgb8::BLACK, Rgb8::BLACK, f32::INFINITY));
         if matches!(&self.config.glyph_mode, GlyphMode::HalfBlock) {
-            self.map_gbuffer_to_buffer_half_block(gbuf, target, &[]);
+            self.map_gbuffer_to_buffer_half_block(gbuf, target, &lights);
         } else {
-            self.map_gbuffer_to_buffer(gbuf, target, &[]);
+            self.map_gbuffer_to_buffer(gbuf, target, &lights);
         }
     }
 
-    pub fn resolve_gbuffer_to_image(&self, gbuf: &GBuffer, target: &mut ImageTarget) {
+    pub fn resolve_gbuffer_to_image(&self, scene: &Scene, gbuf: &GBuffer, target: &mut ImageTarget) {
         if target.width() != self.config.width() || target.height() != self.config.height() {
             debug_assert!(false, "resolve_gbuffer_to_image: target size mismatch");
         }
         debug_assert_eq!(gbuf.width(), target.width());
         debug_assert_eq!(gbuf.height(), target.height());
 
+        let lights = Self::scene_lights_in_view(scene);
         target.clear_rgba(0, 0, 0, 0);
-        self.map_gbuffer_to_image(gbuf, target, &[]);
+        self.map_gbuffer_to_image(gbuf, target, &lights);
     }
 
     fn map_gbuffer_to_image(&self, gbuf: &GBuffer, target: &mut ImageTarget, lights: &[Light]) {
@@ -1407,6 +1409,37 @@ mod tests {
 
         renderer.render_image(&scene_front, &mut img_front);
         renderer.render_image(&scene_back, &mut img_back);
+        assert_ne!(img_front.hash64(), img_back.hash64());
+    }
+
+    #[test]
+    fn resolve_gbuffer_to_image_uses_scene_lights() {
+        let mut base_scene = Scene::new();
+        base_scene.add_object(
+            Mesh::unit_triangle(),
+            Transform::IDENTITY,
+            Material::default(),
+        );
+
+        let mut scene_front = base_scene.clone();
+        scene_front.add_light(Light::directional(Vec3::new(0.0, 0.0, -1.0), Vec3::ONE, 1.0));
+        let mut scene_back = base_scene.clone();
+        scene_back.add_light(Light::directional(Vec3::new(0.0, 0.0, 1.0), Vec3::ONE, 1.0));
+
+        let renderer = Renderer::new(
+            RendererConfig::default()
+                .with_size(64, 32)
+                .with_shader_id(ShaderId::Lambert)
+                .with_debug_view(DebugView::Final),
+        );
+        let mut gbuf = crate::GBuffer::new(64, 32);
+        crate::raster::render_to_gbuffer(&base_scene, &mut gbuf);
+
+        let mut img_front = crate::targets::ImageTarget::new(64, 32);
+        let mut img_back = crate::targets::ImageTarget::new(64, 32);
+        renderer.resolve_gbuffer_to_image(&scene_front, &gbuf, &mut img_front);
+        renderer.resolve_gbuffer_to_image(&scene_back, &gbuf, &mut img_back);
+
         assert_ne!(img_front.hash64(), img_back.hash64());
     }
 

@@ -18,7 +18,7 @@ fn glyph_resolve(c: &mut Criterion) {
 
     c.bench_function("glyph/resolve", |b| {
         b.iter(|| {
-            renderer.resolve_gbuffer_to_buffer(black_box(&gbuf), black_box(&mut out));
+            renderer.resolve_gbuffer_to_buffer(black_box(&scene), black_box(&gbuf), black_box(&mut out));
             black_box(out.hash64());
         })
     });
