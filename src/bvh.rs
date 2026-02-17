@@ -486,7 +486,7 @@ impl SceneBvh {
         for (object_index, (mesh, _mat, xf)) in scene.iter_objects().enumerate() {
             let bvh = match self.meshes.get(object_index) {
                 Some(b) => b,
-                None => return None,
+                None => continue,
             };
 
             let (ray_local, world_from_local, normal_mat) = transform_ray_to_local(ray_world, xf);
@@ -597,5 +597,25 @@ mod tests {
         assert_eq!(hit.object_index, 0);
         assert!(hit.t.is_finite());
         assert!(hit.position.z.abs() < 1e-6);
+    }
+
+    #[test]
+    fn scene_bvh_pick_ignores_objects_added_after_build() {
+        let mut scene = Scene::new();
+        let mat = crate::Material::default();
+        scene.add_object(Mesh::unit_triangle(), Transform::IDENTITY, mat.clone());
+        let sbvh = SceneBvh::build(&scene);
+
+        scene.add_object(
+            Mesh::unit_triangle(),
+            Transform::from_translation(Vec3::new(10.0, 10.0, 0.0)),
+            mat,
+        );
+
+        let ray = Ray::new(Vec3::new(0.0, 0.0, 1.0), Vec3::new(0.0, 0.0, -1.0));
+        let hit = sbvh.pick(&scene, &ray).expect("scene hit");
+
+        assert_eq!(hit.object_index, 0);
+        assert!(hit.t.is_finite());
     }
 }
