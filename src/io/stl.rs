@@ -142,17 +142,43 @@ fn parse_ascii(src: &str) -> Result<Mesh, StlError> {
     Ok(mesh)
 }
 
-pub fn load_stl(path: impl AsRef<Path>) -> Result<Mesh, StlError> {
-    let path = path.as_ref();
-    let bytes = read_to_bytes(path)?;
+fn has_valid_binary_layout(bytes: &[u8]) -> bool {
+    if bytes.len() < 84 {
+        return false;
+    }
+    let Ok(count_bytes) = <[u8; 4]>::try_from(&bytes[80..84]) else {
+        return false;
+    };
+    let tri_count = u32::from_le_bytes(count_bytes) as usize;
+    let Some(tri_bytes) = tri_count.checked_mul(50) else {
+        return false;
+    };
+    let Some(expected_len) = 84usize.checked_add(tri_bytes) else {
+        return false;
+    };
+    expected_len == bytes.len()
+}
+
+fn load_stl_bytes(bytes: &[u8]) -> Result<Mesh, StlError> {
+    if has_valid_binary_layout(bytes) {
+        return parse_binary(bytes);
+    }
     if bytes.starts_with(b"solid") {
-        if let Ok(s) = std::str::from_utf8(&bytes) {
+        if let Ok(s) = std::str::from_utf8(bytes) {
             if s.contains("facet") && s.contains("vertex") {
-                return parse_ascii(s);
+                if let Ok(mesh) = parse_ascii(s) {
+                    return Ok(mesh);
+                }
             }
         }
     }
-    parse_binary(&bytes)
+    parse_binary(bytes)
+}
+
+pub fn load_stl(path: impl AsRef<Path>) -> Result<Mesh, StlError> {
+    let path = path.as_ref();
+    let bytes = read_to_bytes(path)?;
+    load_stl_bytes(&bytes)
 }
 
 pub fn load_stl_str(src: &str) -> Result<Mesh, StlError> {
@@ -180,5 +206,16 @@ endsolid
         assert_eq!(mesh.indices.len(), 1);
         assert_eq!(mesh.positions.len(), 3);
         mesh.assert_invariants();
+    }
+
+    #[test]
+    fn stl_binary_with_solid_header_is_not_misclassified_as_ascii() {
+        let mut bytes = vec![0u8; 84 + 50];
+        let header = b"solid s\nfacet normal 0 0 1\nvertex\n";
+        bytes[..header.len()].copy_from_slice(header);
+        bytes[80..84].copy_from_slice(&(1u32).to_le_bytes());
+        let mesh = load_stl_bytes(&bytes).unwrap();
+        assert_eq!(mesh.indices.len(), 1);
+        assert_eq!(mesh.positions.len(), 3);
     }
 }
