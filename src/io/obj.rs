@@ -185,7 +185,13 @@ fn parse_obj(
             }
             "mtllib" => {
                 if mtllib.is_none() {
-                    mtllib = it.next().map(|s| s.to_string());
+                    let name = it
+                        .take_while(|tok| !tok.starts_with('#'))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    if !name.is_empty() {
+                        mtllib = Some(name);
+                    }
                 }
             }
             _ => {}
@@ -638,6 +644,43 @@ f 1 2 3
         assert!(matches!(err, ObjError::Io));
 
         let _ = fs::remove_file(&obj_path);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn obj_file_loader_supports_mtllib_with_spaces() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("ascii3d-obj-mtl-spaces-{}", nonce));
+        fs::create_dir_all(&dir).unwrap();
+        let obj_path = dir.join("model.obj");
+        let mtl_name = "my material file.mtl";
+        let mtl_path = dir.join(mtl_name);
+        let obj = format!(
+            r"
+mtllib {mtl_name}
+v 0 0 0
+v 1 0 0
+v 0 1 0
+usemtl Red
+f 1 2 3
+"
+        );
+        let mtl = r"
+newmtl Red
+Kd 1 0 0
+";
+        fs::write(&obj_path, obj).unwrap();
+        fs::write(&mtl_path, mtl).unwrap();
+
+        let loaded = load_obj_with_mtl(&obj_path).unwrap();
+        assert_eq!(loaded.mesh.indices.len(), 1);
+        assert_eq!(loaded.material_names.get(1).map(String::as_str), Some("Red"));
+
+        let _ = fs::remove_file(&obj_path);
+        let _ = fs::remove_file(&mtl_path);
         let _ = fs::remove_dir_all(&dir);
     }
 
