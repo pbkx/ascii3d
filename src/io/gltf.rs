@@ -601,13 +601,39 @@ fn read_accessor_vec2(
     accessor_index: usize,
 ) -> Result<Vec<Vec2>, GltfError> {
     let layout = accessor_layout(root, buffers, accessor_index)?;
-    if layout.accessor.kind != "VEC2" || layout.accessor.component_type != 5126 {
+    if layout.accessor.kind != "VEC2" {
         return Err(GltfError::UnsupportedAccessor);
     }
     let mut out = Vec::with_capacity(layout.count);
-    for i in 0..layout.count {
-        let e = accessor_elem(&layout, i)?;
-        out.push(Vec2::new(read_f32_le(&e[0..4]), read_f32_le(&e[4..8])));
+    match layout.accessor.component_type {
+        5126 => {
+            for i in 0..layout.count {
+                let e = accessor_elem(&layout, i)?;
+                out.push(Vec2::new(read_f32_le(&e[0..4]), read_f32_le(&e[4..8])));
+            }
+        }
+        5121 => {
+            if !layout.accessor.normalized {
+                return Err(GltfError::UnsupportedAccessor);
+            }
+            for i in 0..layout.count {
+                let e = accessor_elem(&layout, i)?;
+                out.push(Vec2::new(f32::from(e[0]) / 255.0, f32::from(e[1]) / 255.0));
+            }
+        }
+        5123 => {
+            if !layout.accessor.normalized {
+                return Err(GltfError::UnsupportedAccessor);
+            }
+            for i in 0..layout.count {
+                let e = accessor_elem(&layout, i)?;
+                out.push(Vec2::new(
+                    f32::from(read_u16_le(&e[0..2])) / 65535.0,
+                    f32::from(read_u16_le(&e[2..4])) / 65535.0,
+                ));
+            }
+        }
+        _ => return Err(GltfError::UnsupportedAccessor),
     }
     Ok(out)
 }
@@ -2624,6 +2650,64 @@ mod tests {
         )
     }
 
+    fn tiny_textured_gltf_inline_with_normalized_integer_uvs() -> String {
+        let mut geom = Vec::new();
+
+        let positions = [
+            -0.5f32, -0.5, 0.0, //
+            0.5, -0.5, 0.0, //
+            0.0, 0.5, 0.0,
+        ];
+        for v in positions {
+            geom.extend_from_slice(&v.to_le_bytes());
+        }
+
+        let uvs0 = [[0u8, 0u8], [255u8, 0u8], [0u8, 255u8]];
+        for uv in uvs0 {
+            geom.extend_from_slice(&uv);
+        }
+
+        let uvs1 = [[0u16, 0u16], [u16::MAX, 0u16], [0u16, u16::MAX]];
+        for uv in uvs1 {
+            geom.extend_from_slice(&uv[0].to_le_bytes());
+            geom.extend_from_slice(&uv[1].to_le_bytes());
+        }
+
+        let indices = [0u16, 1u16, 2u16];
+        for i in indices {
+            geom.extend_from_slice(&i.to_le_bytes());
+        }
+
+        use base64::Engine as _;
+        let geom_payload = base64::engine::general_purpose::STANDARD.encode(geom);
+
+        format!(
+            r#"{{
+"asset":{{"version":"2.0"}},
+"buffers":[{{"uri":"data:application/octet-stream;base64,{geom_payload}","byteLength":60}}],
+"bufferViews":[
+  {{"buffer":0,"byteOffset":0,"byteLength":36}},
+  {{"buffer":0,"byteOffset":36,"byteLength":6}},
+  {{"buffer":0,"byteOffset":42,"byteLength":12}},
+  {{"buffer":0,"byteOffset":54,"byteLength":6}}
+],
+"accessors":[
+  {{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}},
+  {{"bufferView":1,"componentType":5121,"count":3,"type":"VEC2","normalized":true}},
+  {{"bufferView":2,"componentType":5123,"count":3,"type":"VEC2","normalized":true}},
+  {{"bufferView":3,"componentType":5123,"count":3,"type":"SCALAR"}}
+],
+"meshes":[{{"primitives":[{{
+  "attributes":{{"POSITION":0,"TEXCOORD_0":1,"TEXCOORD_1":2}},
+  "indices":3
+}}]}}],
+"nodes":[{{"mesh":0}}],
+"scenes":[{{"nodes":[0]}}],
+"scene":0
+}}"#
+        )
+    }
+
     fn tiny_animated_gltf_inline() -> String {
         let mut bytes = Vec::new();
 
@@ -2910,6 +2994,23 @@ mod tests {
         assert_eq!(tex.sampler.wrap_t, TextureWrapMode::MirroredRepeat);
         assert_eq!(tex.sampler.mag_filter, TextureMagFilter::Nearest);
         assert_eq!(tex.sampler.min_filter, TextureMinFilter::LinearMipmapLinear);
+    }
+
+    #[test]
+    fn gltf_texcoord_accepts_normalized_unsigned_integer_accessors() {
+        let gltf = tiny_textured_gltf_inline_with_normalized_integer_uvs();
+        let scene = load_gltf_str(&gltf).unwrap();
+        assert_eq!(scene.object_count(), 1);
+        let (mesh, _mat, _xf) = scene.iter_objects().next().unwrap();
+
+        assert_eq!(mesh.uvs.len(), 3);
+        assert_eq!(mesh.uvs1.len(), 3);
+        assert!((mesh.uvs[0].x - 0.0).abs() < 1e-6);
+        assert!((mesh.uvs[0].y - 0.0).abs() < 1e-6);
+        assert!((mesh.uvs[1].x - 1.0).abs() < 1e-6);
+        assert!((mesh.uvs[2].y - 1.0).abs() < 1e-6);
+        assert!((mesh.uvs1[1].x - 1.0).abs() < 1e-6);
+        assert!((mesh.uvs1[2].y - 1.0).abs() < 1e-6);
     }
 
     #[test]
