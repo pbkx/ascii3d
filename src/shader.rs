@@ -280,12 +280,12 @@ impl Shader for UnlitShader {
         _depth: f32,
         _view_pos: Vec3,
         _normal: Vec3,
-        _kd: Vec3,
+        kd: Vec3,
         _ks: Vec3,
         _ns: f32,
         ke: Vec3,
     ) -> f32 {
-        (1.0 + luma(ke)).clamp(0.0, 1.0)
+        luma(kd + ke).clamp(0.0, 1.0)
     }
 
     fn shade_rgb(
@@ -393,5 +393,35 @@ impl Shader for BuiltinShader {
             BuiltinShader::Lambert(s) => s.shade_rgb(depth, view_pos, normal, kd, ks, ns, ke),
             BuiltinShader::Unlit(s) => s.shade_rgb(depth, view_pos, normal, kd, ks, ns, ke),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Shader, UnlitShader};
+    use glam::Vec3;
+
+    #[test]
+    fn unlit_scalar_uses_albedo_luma() {
+        let shader = UnlitShader;
+        let dark = shader.shade_scalar(
+            0.0,
+            Vec3::ZERO,
+            Vec3::Z,
+            Vec3::ZERO,
+            Vec3::ZERO,
+            0.0,
+            Vec3::ZERO,
+        );
+        let bright = shader.shade_scalar(
+            0.0,
+            Vec3::ZERO,
+            Vec3::Z,
+            Vec3::new(0.8, 0.8, 0.8),
+            Vec3::ZERO,
+            0.0,
+            Vec3::ZERO,
+        );
+        assert!(bright > dark);
     }
 }
