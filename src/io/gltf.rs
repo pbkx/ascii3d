@@ -1512,11 +1512,7 @@ fn load_skins(root: &GltfRoot, buffers: &[Vec<u8>]) -> Result<Vec<LoadedSkin>, G
     Ok(out)
 }
 
-fn compute_node_world_matrices(root: &GltfRoot, locals: &[Mat4]) -> Result<Vec<Mat4>, GltfError> {
-    if locals.len() != root.nodes.len() {
-        return Err(GltfError::InvalidIndex);
-    }
-
+fn node_parent_map(root: &GltfRoot) -> Result<Vec<Option<usize>>, GltfError> {
     let mut parent: Vec<Option<usize>> = vec![None; root.nodes.len()];
     for (node_index, node) in root.nodes.iter().enumerate() {
         for &child in &node.children {
@@ -1529,6 +1525,20 @@ fn compute_node_world_matrices(root: &GltfRoot, locals: &[Mat4]) -> Result<Vec<M
             parent[child] = Some(node_index);
         }
     }
+    Ok(parent)
+}
+
+fn implicit_scene_root_nodes(root: &GltfRoot) -> Result<Vec<usize>, GltfError> {
+    let parent = node_parent_map(root)?;
+    Ok((0..parent.len()).filter(|&i| parent[i].is_none()).collect())
+}
+
+fn compute_node_world_matrices(root: &GltfRoot, locals: &[Mat4]) -> Result<Vec<Mat4>, GltfError> {
+    if locals.len() != root.nodes.len() {
+        return Err(GltfError::InvalidIndex);
+    }
+
+    let parent = node_parent_map(root)?;
 
     let mut world = vec![Mat4::IDENTITY; root.nodes.len()];
     let mut done = vec![false; root.nodes.len()];
@@ -2241,7 +2251,8 @@ fn build_scene(
     }
 
     if root.scenes.is_empty() {
-        for i in 0..root.nodes.len() {
+        let root_nodes = implicit_scene_root_nodes(root)?;
+        for &i in &root_nodes {
             walk(
                 i,
                 root,
@@ -2254,7 +2265,7 @@ fn build_scene(
                 &mut scene,
             )?;
         }
-        apply_cameras_and_lights(&mut scene, root, &world_matrices, None);
+        apply_cameras_and_lights(&mut scene, root, &world_matrices, Some(&root_nodes));
         return Ok(scene);
     }
 
@@ -2390,6 +2401,47 @@ mod tests {
 ],
 "scenes":[{{"nodes":[0]}}],
 "scene":0
+}}"#
+        )
+    }
+
+    fn tiny_gltf_inline_no_scene() -> String {
+        let mut bytes = Vec::new();
+
+        let positions = [
+            -0.5f32, -0.5, 0.0, //
+            0.5, -0.5, 0.0, //
+            0.0, 0.5, 0.0,
+        ];
+        for v in positions {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+
+        let indices = [0u16, 1u16, 2u16];
+        for i in indices {
+            bytes.extend_from_slice(&i.to_le_bytes());
+        }
+
+        use base64::Engine as _;
+        let payload = base64::engine::general_purpose::STANDARD.encode(bytes);
+
+        format!(
+            r#"{{
+"asset":{{"version":"2.0"}},
+"buffers":[{{"uri":"data:application/octet-stream;base64,{payload}","byteLength":42}}],
+"bufferViews":[
+  {{"buffer":0,"byteOffset":0,"byteLength":36}},
+  {{"buffer":0,"byteOffset":36,"byteLength":6}}
+],
+"accessors":[
+  {{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}},
+  {{"bufferView":1,"componentType":5123,"count":3,"type":"SCALAR"}}
+],
+"meshes":[{{"primitives":[{{"attributes":{{"POSITION":0}},"indices":1}}]}}],
+"nodes":[
+  {{"children":[1],"translation":[0.25,0.0,0.0]}},
+  {{"mesh":0,"translation":[0.25,0.0,0.0]}}
+]
 }}"#
         )
     }
@@ -2738,6 +2790,18 @@ mod tests {
             assert!((centroid.x - 0.5).abs() < 1e-6);
         }
         assert!(saw);
+    }
+
+    #[test]
+    fn gltf_inline_without_scene_uses_only_implicit_roots() {
+        let gltf = tiny_gltf_inline_no_scene();
+        let scene = load_gltf_str(&gltf).unwrap();
+        assert_eq!(scene.object_count(), 1);
+
+        let (mesh, _mat, xf) = scene.iter_objects().next().unwrap();
+        assert!(xf.translation.length() < 1e-6);
+        let centroid = (mesh.positions[0] + mesh.positions[1] + mesh.positions[2]) / 3.0;
+        assert!((centroid.x - 0.5).abs() < 1e-6);
     }
 
     #[test]
